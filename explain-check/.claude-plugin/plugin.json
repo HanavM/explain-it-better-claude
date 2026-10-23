@@ -1,0 +1,1 @@
+{ "name": "explain-check", "version": "0.1.0", "description": "Sometimes asks which parts of the agent's last explanation you understood, and logs the answer as feedback data" }
