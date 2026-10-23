@@ -85,6 +85,12 @@ describe('parsePoints', () => {
     const pts = parsePoints(undefined, '## Summary\n- **Moved the cache** into the worker process\n| a | b |\n')
     expect(pts).toEqual(['Summary', 'Moved the cache into the worker process'].filter(p => p.length > 15))
   })
+  test('an explicit empty array means nothing to ask', () => {
+    expect(parsePoints('[]', '## Summary\n- **Moved the cache** into the worker process\n')).toEqual([])
+  })
+  test('no fallback for automatic checks', () => {
+    expect(parsePoints(undefined, '- **Moved the cache** into the worker process\n', false)).toEqual([])
+  })
 })
 
 describe('readAnswer', () => {

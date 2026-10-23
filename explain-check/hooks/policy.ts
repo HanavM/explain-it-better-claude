@@ -95,9 +95,12 @@ export function cleanLabel(raw: string): string {
 export const NONE = 'None of it really'
 
 // Reads the splitter model's reply: a JSON array of strings, possibly wrapped
-// in prose or a code fence. Falls back to the message's own first lines.
-export function parsePoints(reply: string | undefined, answer: string): string[] {
-  let points: string[] = []
+// in prose or a code fence. An explicit empty array means the message has
+// nothing worth checking, so nothing is asked. An unreadable reply falls back
+// to the message's own first lines only when `allowFallback` (a manual check);
+// an automatic check would otherwise ask about whatever the opening lines say.
+export function parsePoints(reply: string | undefined, answer: string, allowFallback = true): string[] {
+  let points: string[] | null = null
   const match = reply?.match(/\[[\s\S]*\]/)
   if (match) {
     try {
@@ -105,7 +108,7 @@ export function parsePoints(reply: string | undefined, answer: string): string[]
       if (Array.isArray(arr)) points = arr.filter((x): x is string => typeof x === 'string')
     } catch {}
   }
-  if (points.length === 0) points = fallbackPoints(answer)
+  if (points === null) points = allowFallback ? fallbackPoints(answer) : []
   const seen = new Set<string>()
   return points
     .map(cleanLabel)
@@ -145,11 +148,15 @@ export function readAnswer(answer: string, points: string[]): Reading {
   }
 }
 
-export const SPLIT_SYSTEM = `You list the 3 key items of a coding agent's message, so the reader can tick which ones they understood.
+export const SPLIT_SYSTEM = `A coding agent sent the reader the message below. The reader will be shown your labels and tick the ones they understood, so pick only the parts a reader could plausibly fail to understand.
+
+First decide whether the message EXPLAINS anything: the reasoning behind a change, how some mechanism works, what a result or number means, a term or symbol the reader has to know, or a trade-off between options. Reporting state does not count, even when it is about technical things: where something is, what another session did, which files changed, that a process is or is not running, which command to run, what to do next. Examples that get []: "resume the other session with this command; it had started a training run that is no longer running", "the run finished and the commit is pushed", "waiting on your answer". If the message explains nothing, reply with [] and nothing else. Most messages that only report or hand off get [].
+
+Otherwise list 1 to 3 of them. Each label NAMES the part without restating its content, so that reading the label alone gives nothing away:
+- Good: "Why the cache key now includes the user id", "What ρ ≤ 0.80 means for the results", "The trade-off between LoRA and full fine-tuning"
+- Bad: "The cache key now includes the user id" (restates it: anyone can tick it), "Agent moved to another session" (logistics), "Why the training run stopped" when the message only says that it stopped (nothing explained)
 
 Rules:
-- Key items are the most important of: changes the agent made, results or findings, decisions the reader must make, caveats that change what they should do, concepts the message explains, and next steps for the reader.
-- Each item is a short label of at most 12 words.
-- Keep the message's own key terms, names, symbols and numbers exactly as written. Do NOT simplify, define or explain them: the point is to test whether the reader understood the message as written.
-- No commas in labels.
+- At most 12 words per label. No commas.
+- Keep the message's own key terms, names, symbols and numbers exactly as written. Do not define or explain them.
 - Reply with a JSON array of strings only.`

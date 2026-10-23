@@ -78,7 +78,7 @@ async function saveUnasked($: EngineInterface, record: Explanation): Promise<voi
   if (record.eligible || record.trigger === 'manual') await save($, { ...record, trigger: null, points: [] })
 }
 
-async function splitPoints($: EngineInterface, answer: string): Promise<string[]> {
+async function splitPoints($: EngineInterface, answer: string, isManual: boolean): Promise<string[]> {
   const r = await $.model.complete({
     model: 'haiku',
     system: SPLIT_SYSTEM,
@@ -88,7 +88,7 @@ async function splitPoints($: EngineInterface, answer: string): Promise<string[]
     timeoutMs: 15_000,
   })
   if (!r.isAnswered) $.ui.log(`explain-check: split fell back (${r.reason})`, { to: 'debug' })
-  return parsePoints(r.isAnswered ? r.text : undefined, answer)
+  return parsePoints(r.isAnswered ? r.text : undefined, answer, isManual)
 }
 
 // The live explanation prompt the training loop deployed, as plain text.
@@ -143,7 +143,7 @@ async function drain($: EngineInterface): Promise<void> {
   pending = null
   isAsking = true
   try {
-    record.points = await splitPoints($, record.answer)
+    record.points = await splitPoints($, record.answer, record.trigger === 'manual')
     // The person may have sent a new prompt or started typing while the
     // split ran; an automatic check would then land on top of that.
     const isStale =
@@ -158,7 +158,7 @@ async function drain($: EngineInterface): Promise<void> {
     let answer: string | undefined
     try {
       answer = await $.ui.ask(
-        'Which of these from the last message did you actually understand? (Space ticks, Enter submits, Esc skips. Type under Other to say what was unclear.)',
+        'Which parts of the last message could you actually follow? (Space ticks, Enter submits, Esc skips. Type under Other to say what was unclear.)',
         { options: [...record.points, NONE], header: 'Understood?', multiSelect: true },
       )
     } catch {
