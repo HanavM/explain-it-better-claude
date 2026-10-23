@@ -6,9 +6,9 @@
 3. Judge: Claude scores each rewrite against what the user actually said.
 4. Train: candidate pairs with a clear score gap become DPO pairs; the small
    model is retrained on every pair so far.
-5. Propose: the best candidate is staged for approval only if it beats the
-   live prompt on the val split AND on the test split it never saw. It goes
-   live when approved on the dashboard.
+5. Deploy: the best candidate that passes a lint check goes live on its own
+   only if it beats the live prompt by a margin that holds up under
+   resampling, on the val split AND on the test split it never saw.
 
 Usage: python round.py [--k 4] [--n 12] [--no-train] [--no-deploy]
 """
@@ -39,16 +39,18 @@ You get the user's request and your draft message, which holds all the facts. Re
 EXPLANATION INSTRUCTIONS:
 {instructions}"""
 
-JUDGE_SYSTEM = """You predict whether one specific person would understand a coding agent's message on first read.
+JUDGE_SYSTEM = """You predict how well one specific person would understand each key item of a coding agent's message on first read.
 
 About the person: learning as they go, often unfamiliar with statistics and internal project terms; terse; dislikes jargon, undefined labels, analogies and storytelling; wants the direct answer first.
 
-You get: the person's request, the ORIGINAL message they actually saw, what they said or ticked about it, and several REWRITES of that message. For each rewrite:
-- understand: 1-10, how likely this person understands it on first read, given exactly what confused them about the original.
+You get: the person's request, the ORIGINAL message they saw, its KEY ITEMS with how well they understood each one in the original (+1 understood, 0 never referenced, -1 not understood, with their words as evidence), and several REWRITES of that message.
+
+For each rewrite:
+- items: for every key item in order, a score from -1 to 1 for how well this person would understand that item reading this rewrite. An item the rewrite drops, buries or misstates scores -1.
 - faithful: false if it changed, added or dropped a fact, number or caveat that matters.
 
 Judge each rewrite on its own merits. Length is not a goal in itself.
-Return JSON only: {"scores": [{"id": "A", "understand": 7, "faithful": true}, ...]}"""
+Return JSON only: {"scores": [{"id": "A", "items": [1, 0.5, -1], "faithful": true}, ...]}"""
 
 PAIR_GAP = 1.0      # min score gap for a DPO pair
 DEPLOY_MARGIN = 0.5  # min val gain over the live prompt
@@ -63,8 +65,8 @@ def live_prompt() -> tuple[str, str]:
 def sample(examples: list[dict], split: str, n: int, seed: int) -> list[dict]:
     rng = random.Random(seed)
     pool = [e for e in examples if e["split"] == split]
-    failed = [e for e in pool if e["reward"] < 0.5]
-    worked = [e for e in pool if e["reward"] >= 0.5]
+    failed = [e for e in pool if e["reward"] < 0]
+    worked = [e for e in pool if e["reward"] >= 0]
     n_failed = min(len(failed), round(n * 2 / 3))
     return rng.sample(failed, n_failed) + rng.sample(worked, min(len(worked), n - n_failed))
 
@@ -80,10 +82,11 @@ def judge(example: dict, rewrites: list[str], seed: int) -> list[float]:
     random.Random(seed).shuffle(order)
     letters = string.ascii_uppercase
     blocks = [f"<rewrite id=\"{letters[j]}\">\n{rewrites[i][:6000]}\n</rewrite>" for j, i in enumerate(order)]
+    n_items = len(example["items"])
     prompt = (
         f"<request>\n{example['request'][:1500]}\n</request>\n\n"
         f"<original>\n{example['answer'][:6000]}\n</original>\n\n"
-        f"<feedback>\n{example['feedback']}\n</feedback>\n\n" + "\n\n".join(blocks)
+        f"<key_items>\n{example['feedback']}\n</key_items>\n\n" + "\n\n".join(blocks)
     )
     got = {str(s.get("id", "")).strip().upper()[-1:]: s for s in extract_json(claude(prompt, JUDGE_SYSTEM, model="sonnet"))["scores"]}
     if set(got) != set(letters[: len(rewrites)]):
@@ -91,8 +94,12 @@ def judge(example: dict, rewrites: list[str], seed: int) -> list[float]:
     scores = [0.0] * len(rewrites)
     for j, i in enumerate(order):
         s = got[letters[j]]
+        item_scores = [max(-1.0, min(1.0, float(x))) for x in s["items"]]
+        if len(item_scores) != n_items:
+            raise ValueError(f"judge gave {len(item_scores)} item scores, expected {n_items}")
         faithful = str(s.get("faithful", True)).lower() != "false"
-        scores[i] = float(s["understand"]) * (1.0 if faithful else 0.3)
+        # 0-10: mean item understanding, mapped from [-1, 1].
+        scores[i] = (sum(item_scores) / n_items + 1) * 5 * (1.0 if faithful else 0.3)
     return scores
 
 
@@ -100,8 +107,10 @@ class RoundAborted(Exception):
     pass
 
 
-def evaluate(arms: list[str], batch: list[dict], seed: int, label: str) -> list[float]:
-    """Mean judged score of each arm over the batch; aborts if too little was judged."""
+def evaluate(arms: list[str], batch: list[dict], seed: int, label: str) -> tuple[list[float], list[list[float]]]:
+    """Mean judged score of each arm, and each judged example's per-arm scores.
+
+    Aborts if too little of the batch was judged."""
     jobs = [(ei, ai) for ei in range(len(batch)) for ai in range(len(arms))]
     texts: dict = {}
     with ThreadPoolExecutor(6) as pool:
@@ -113,7 +122,7 @@ def evaluate(arms: list[str], batch: list[dict], seed: int, label: str) -> list[
             except Exception as e:
                 print(f"rewrite failed {key}: {e}", file=sys.stderr)
             set_status("replaying", f"{label}: {i}/{len(jobs)} rewrites")
-    totals, counts = [0.0] * len(arms), [0] * len(arms)
+    rows: list[list[float]] = []
     with ThreadPoolExecutor(6) as pool:
         futs = {}
         for ei, ex in enumerate(batch):
@@ -121,15 +130,38 @@ def evaluate(arms: list[str], batch: list[dict], seed: int, label: str) -> list[
                 futs[pool.submit(judge, ex, [texts[(ei, ai)] for ai in range(len(arms))], seed + ei)] = ei
         for i, f in enumerate(futs, 1):
             try:
-                for ai, s in enumerate(f.result()):
-                    totals[ai] += s
-                    counts[ai] += 1
+                rows.append(f.result())
             except Exception as e:
                 print(f"judge failed: {e}", file=sys.stderr)
             set_status("judging", f"{label}: {i}/{len(futs)}")
-    if min(counts) < max(2, len(batch) // 2):
-        raise RoundAborted(f"{label}: only {min(counts)}/{len(batch)} examples judged")
-    return [t / c for t, c in zip(totals, counts)]
+    if len(rows) < max(2, len(batch) // 2):
+        raise RoundAborted(f"{label}: only {len(rows)}/{len(batch)} examples judged")
+    means = [sum(r[ai] for r in rows) / len(rows) for ai in range(len(arms))]
+    return means, rows
+
+
+def gain(rows: list[list[float]], a: int, b: int, seed: int, n_boot: int = 2000) -> tuple[float, float]:
+    """Mean score gain of arm a over arm b, and the share of resamples where it stays above 0."""
+    diffs = [r[a] - r[b] for r in rows]
+    rng = random.Random(seed)
+    wins = sum(sum(rng.choices(diffs, k=len(diffs))) > 0 for _ in range(n_boot))
+    return sum(diffs) / len(diffs), wins / n_boot
+
+
+LINT_SYSTEM = """You check explanation instructions written for a coding agent. Flag real problems only:
+- names a specific project, repo, file, person or term from one past case instead of stating a general rule
+- contradicts itself, or tells the agent to do something that makes explanations harder to follow (e.g. use terms without context)
+- vague filler with no checkable rule ("be clear", "be precise")
+- instructions about something other than how to explain work to the user
+Return JSON only: {"ok": true|false, "problems": ["..."]}"""
+
+
+def lint(text: str) -> dict:
+    try:
+        out = extract_json(claude(f"<instructions>\n{text}\n</instructions>", LINT_SYSTEM, model="sonnet"))
+        return {"ok": bool(out.get("ok")), "problems": [str(p) for p in out.get("problems", [])][:5]}
+    except Exception as e:
+        return {"ok": False, "problems": [f"lint failed: {e}"]}
 
 
 def train_policy(round_no: int) -> dict | None:
@@ -164,18 +196,18 @@ def train_policy(round_no: int) -> dict | None:
     return {"ok": True, "adapter": name, "pairs": len(rows), "iters": iters, "secs": round(time.time() - t0)}
 
 
-def propose_deploy(round_no: int, text: str, info: dict) -> str:
-    """Stages a prompt for approval on the dashboard; it is not live yet."""
+def deploy(round_no: int, text: str, info: dict) -> str:
+    """Makes the prompt live: new Claude Code sessions pick it up."""
     name = f"v{round_no:03d}"
     atomic_write_text(PROMPTS / f"{name}.md", text.strip() + "\n")
-    atomic_write_json(PROMPTS / "proposed.json", {"name": name, "round": round_no, "at": time.time(), **info})
+    atomic_write_json(PROMPTS / "current.json", {"name": name, "round": round_no, "at": time.time(), **info})
     return name
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--k", type=int, default=4)
-    ap.add_argument("--n", type=int, default=12)
+    ap.add_argument("--n", type=int, default=14)
     ap.add_argument("--no-train", action="store_true")
     ap.add_argument("--no-deploy", action="store_true")
     args = ap.parse_args()
@@ -209,11 +241,17 @@ def main() -> None:
     except Exception as e:
         print(f"claude baseline failed: {e}", file=sys.stderr)
 
+    set_status("linting", f"round {round_no}: checking {len(candidates)} prompts")
+    with ThreadPoolExecutor(6) as pool:
+        lints = list(pool.map(lint, candidates))
+
     arms = [live_text] + candidates
     val = sample(examples, "val", args.n, seed)
-    val_scores = evaluate(arms, val, seed, "val")
+    val_scores, val_rows = evaluate(arms, val, seed, "val")
     live_score, cand_scores = val_scores[0], val_scores[1:]
     best = max(range(len(candidates)), key=lambda i: cand_scores[i])
+    eligible = [i for i in range(len(candidates)) if lints[i]["ok"]]
+    pick = max(eligible, key=lambda i: cand_scores[i]) if eligible else None
 
     new_pairs = 0
     for i, j in combinations(range(len(candidates)), 2):
@@ -227,28 +265,32 @@ def main() -> None:
     record.update({
         "examples": {"total": len(examples), "popup": sum(e["source"] == "popup" for e in examples)},
         "live": {"name": live_name, "val": round(live_score, 2)},
-        "candidates": [{"text": c, "val": round(s, 2), "source": src} for c, s, src in zip(candidates, cand_scores, sources)],
+        "candidates": [{"text": c, "val": round(s, 2), "source": src, "lint": l}
+                       for c, s, src, l in zip(candidates, cand_scores, sources, lints)],
         "best": best, "new_pairs": new_pairs, "val_ids": [e["id"] for e in val],
     })
 
     deployed = None
-    if not args.no_deploy and cand_scores[best] - live_score >= DEPLOY_MARGIN:
-        test = sample(examples, "test", 8, seed)
-        t_live, t_best = evaluate([live_text, candidates[best]], test, seed + 500, "test")
-        record["test"] = {"live": round(t_live, 2), "best": round(t_best, 2)}
-        if t_best > t_live:
-            deployed = propose_deploy(round_no, candidates[best], {
-                "source": sources[best], "val": round(cand_scores[best], 2), "live_val": round(live_score, 2),
-                "test": round(t_best, 2), "live_test": round(t_live, 2), "live_name": live_name})
-    record["proposed"] = deployed
-    record["deployed"] = None
-    record["deployed_source"] = sources[best] if deployed else None
+    gate: dict = {"pick": pick}
+    if pick is not None:
+        d, p = gain(val_rows, pick + 1, 0, seed)
+        gate["val"] = {"gain": round(d, 2), "p": round(p, 3)}
+        if not args.no_deploy and d >= DEPLOY_MARGIN and p >= 0.9:
+            test = sample(examples, "test", 12, seed)
+            (t_live, t_pick), t_rows = evaluate([live_text, candidates[pick]], test, seed + 500, "test")
+            td, tp = gain(t_rows, 1, 0, seed + 1)
+            gate["test"] = {"live": round(t_live, 2), "pick": round(t_pick, 2), "gain": round(td, 2), "p": round(tp, 3)}
+            if td > 0 and tp >= 0.8:
+                deployed = deploy(round_no, candidates[pick], {"source": sources[pick], "from": live_name})
+    record["gate"] = gate
+    record["deployed"] = deployed
+    record["deployed_source"] = sources[pick] if deployed else None
 
     record["training"] = None if args.no_train or new_pairs == 0 else train_policy(round_no)
     record["secs"] = round(time.time() - started)
     atomic_write_json(ROUNDS / f"r{round_no:03d}.json", record)
-    set_status("idle", f"round {round_no} done" + (f", {deployed} waiting for approval" if deployed else ""))
-    print(json.dumps({k: record[k] for k in ("round", "live", "best", "new_pairs", "proposed", "secs")}, indent=1))
+    set_status("idle", f"round {round_no} done" + (f", {deployed} is live" if deployed else ", live prompt kept"))
+    print(json.dumps({k: record[k] for k in ("round", "live", "gate", "new_pairs", "deployed", "secs")}, indent=1))
 
 
 if __name__ == "__main__":

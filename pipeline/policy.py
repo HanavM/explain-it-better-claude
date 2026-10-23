@@ -5,9 +5,9 @@ import re
 
 from common import ADAPTERS, BASE_MODEL, load_json
 
-SYSTEM = """You write the explanation instructions that a coding agent follows when it reports its work to one specific person. You are shown the current instructions and real cases where the person did or did not understand the agent's message.
+SYSTEM = """You write the explanation instructions that a coding agent follows when it reports its work to one specific person. You are shown the current instructions and real messages the agent wrote. Each message's key items are scored for how well the person understood them: +1 understood, 0 never referenced, -1 not understood.
 
-Write improved instructions that would have made the failed cases understandable without hurting the ones that worked.
+Write improved instructions that would have made the -1 items understandable without hurting the +1 items.
 - Address the agent directly ("Start with...", "Define...").
 - Concrete, checkable rules. No vague advice like "be clear".
 - General rules that apply to any future message, not fixes for one case: never name a case's specific terms, repos or files.
@@ -34,14 +34,13 @@ MAX_PROMPT_CHARS = 1500
 
 def build_state(current: str, examples: list[dict], seed: int, n_failed: int = 8, n_worked: int = 3) -> str:
     rng = random.Random(seed)
-    failed = [e for e in examples if e["reward"] < 0.5]
-    worked = [e for e in examples if e["reward"] >= 0.5]
+    failed = [e for e in examples if e["reward"] < 0]
+    worked = [e for e in examples if e["reward"] > 0]
     picks = rng.sample(failed, min(n_failed, len(failed))) + rng.sample(worked, min(n_worked, len(worked)))
     cases = []
     for i, e in enumerate(picks, 1):
         excerpt = e["answer"][:500].replace("\n", " ")
-        verdict = "NOT understood" if e["reward"] < 0.5 else "understood"
-        cases.append(f"Case {i} ({e['type']}, {verdict})\nAgent wrote: {excerpt}...\n{e['feedback']}")
+        cases.append(f"Case {i} ({e['type']}, mean {e['reward']:+.2f})\nAgent wrote: {excerpt}...\nItems:\n{e['feedback']}")
     return (
         f"Current instructions:\n{current.strip() or '(none yet)'}\n\n"
         + "\n\n".join(cases)

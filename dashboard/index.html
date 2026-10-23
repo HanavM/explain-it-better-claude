@@ -58,14 +58,6 @@ button.tbl:hover { color: var(--ink); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 td, th { text-align: left; padding: 4px 6px; border-top: 1px solid var(--border); }
 th { color: var(--ink-2); font-weight: 500; }
-.proposal { margin-bottom: 12px; border-color: var(--s1); }
-.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.cap { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-.actions { display: flex; gap: 8px; margin-top: 14px; }
-.btn { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer; }
-.btn.primary { background: var(--s1); border-color: var(--s1); color: #fff; }
-.btn:disabled { opacity: .5; cursor: default; }
-@media (max-width: 760px) { .cmp { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } .grid2 { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -76,19 +68,10 @@ th { color: var(--ink-2); font-weight: 500; }
     <div class="status"><span class="dot" id="dot"></span><span id="phase">…</span><span class="chip" id="version">v000</span></div>
   </header>
 
-  <section class="card proposal" id="proposal" hidden>
-    <h2><span>New prompt to review · <span id="pr-name"></span></span><span class="legend muted" id="pr-meta"></span></h2>
-    <div class="cmp">
-      <div><div class="cap">Proposed</div><pre id="pr-new"></pre></div>
-      <div><div class="cap">Live now</div><pre id="pr-old"></pre></div>
-    </div>
-    <div class="actions"><button class="btn primary" id="approve">Approve</button><button class="btn" id="reject">Reject</button></div>
-  </section>
-
   <section class="tiles">
     <div class="card tile"><div class="label">Understood · 7 days</div><div class="value" id="t-rate">–</div><div class="sub" id="t-rate-sub">popup points</div></div>
     <div class="card tile"><div class="label">Popups answered</div><div class="value" id="t-pop">–</div><div class="sub" id="t-pop-sub"></div></div>
-    <div class="card tile"><div class="label">History misses</div><div class="value" id="t-hist">–</div><div class="sub" id="t-hist-sub"></div></div>
+    <div class="card tile"><div class="label">Past items missed</div><div class="value" id="t-hist">–</div><div class="sub" id="t-hist-sub"></div></div>
     <div class="card tile"><div class="label">Training pairs</div><div class="value" id="t-pairs">–</div><div class="sub" id="t-pairs-sub"></div></div>
   </section>
 
@@ -186,7 +169,7 @@ function barChart(box, items) {
     el('rect', { x: L, y: yy + 2, width: w, height: 12, rx: 4, fill: css('--s1') }, svg);
     el('text', { x: L + w + 6, y: yy + 12, 'font-size': 11, fill: css('--muted') }, svg).textContent = it.n;
     const hit = el('rect', { x: 0, y: yy - 2, width: W, height: rowH, fill: 'transparent' }, svg);
-    hit.addEventListener('mousemove', () => { tip.innerHTML = `<b>${it.name}</b><div>${it.n} messages</div>`; tip.style.display = 'block'; tip.style.left = (L + w + 30) / W * box.clientWidth + 'px'; tip.style.top = yy + 'px'; });
+    hit.addEventListener('mousemove', () => { tip.innerHTML = `<b>${it.name}</b><div>${it.n} items</div>`; tip.style.display = 'block'; tip.style.left = (L + w + 30) / W * box.clientWidth + 'px'; tip.style.top = yy + 'px'; });
     hit.addEventListener('mouseleave', () => tip.style.display = 'none');
   });
 }
@@ -202,14 +185,14 @@ function render() {
   $('t-rate').textContent = pct(p.week_rate);
   $('t-pop').textContent = p.answered;
   $('t-pop-sub').textContent = `${p.asked} asked · ${p.skipped} skipped · ${p.logged} logged`;
-  $('t-hist').textContent = l.labelled ? l.failed : '–';
-  $('t-hist-sub').textContent = `${l.worked} landed · ${l.labelled} labelled`;
+  $('t-hist').textContent = l.labelled ? l.missed : '–';
+  $('t-hist-sub').textContent = `${l.understood} understood · ${l.unreferenced} not referenced`;
   $('t-pairs').textContent = pairs;
   $('t-pairs-sub').textContent = adapter ? `model ${adapter.name} · ${ago(adapter.at)} ago` : 'model untrained';
 
   const rb = $('c-rounds');
   if (!rounds.length) empty(rb, 'No rounds yet');
-  else if (tables.rounds) table(rb, ['Round', 'Live', 'Small', 'Claude', 'Live after', 'Pairs'], rounds.map(r => [r.round, r.live, r.small ?? '–', r.claude ?? '–', r.deployed ? `${r.deployed} (${r.source})` : r.proposed ? (r.rejected ? 'rejected' : 'pending') : '–', r.pairs]));
+  else if (tables.rounds) table(rb, ['Round', 'Live', 'Small', 'Claude', 'Live after', 'Pairs'], rounds.map(r => [r.round, r.live, r.small ?? '–', r.claude ?? '–', r.deployed ? `${r.deployed} (${r.source})` : '–', r.pairs]));
   else lineChart(rb, rounds.map(r => 'R' + r.round), [
     { name: 'Live', color: css('--s1'), values: rounds.map(r => r.live) },
     { name: 'Small', color: css('--s2'), values: rounds.map(r => r.small) },
@@ -222,7 +205,7 @@ function render() {
   else lineChart(db, p.daily.map(d => d.day.slice(5)), [{ name: 'Understood', color: css('--s1'), values: p.daily.map(d => d.rate) }], { min: 0, max: 1, fmt: pct });
 
   const cb = $('c-causes');
-  $('causes-n').textContent = l.failed ? `${l.failed} misses` : '';
+  $('causes-n').textContent = l.missed ? `${l.missed} items` : '';
   if (!l.causes.length) empty(cb, l.labelled ? 'No causes yet' : 'Labelling…'); else barChart(cb, l.causes);
 
   const ms = p.misses.length ? p.misses : l.misses;
@@ -231,25 +214,10 @@ function render() {
     : '<li class="muted">None yet. Popups fill this.</li>';
 
   $('miss-src').textContent = p.misses.length ? 'popups' : 'from history';
-  const pr = data.proposed;
-  $('proposal').hidden = !pr;
-  if (pr) {
-    $('pr-name').textContent = pr.name;
-    $('pr-meta').textContent = `${pr.source === 'claude' ? 'Claude' : 'Small model'} · test ${pr.test} vs ${pr.live_test}`;
-    $('pr-new').textContent = pr.text;
-    $('pr-old').textContent = prompt.text || '(default style)';
-  }
   $('prompt').textContent = prompt.text || 'None yet. Claude Code is using its default style.';
   $('prompt-meta').textContent = prompt.at ? `deployed ${ago(prompt.at)} ago` : '';
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-
-async function decide(path) {
-  $('approve').disabled = $('reject').disabled = true;
-  try { await fetch(path, { method: 'POST' }); } finally { $('approve').disabled = $('reject').disabled = false; load(); }
-}
-$('approve').addEventListener('click', () => decide('/api/approve'));
-$('reject').addEventListener('click', () => decide('/api/reject'));
 
 document.querySelectorAll('button.tbl').forEach(b => b.addEventListener('click', () => {
   tables[b.dataset.t] = !tables[b.dataset.t]; b.textContent = tables[b.dataset.t] ? 'Chart' : 'Table'; render();

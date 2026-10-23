@@ -46,25 +46,25 @@ def popups() -> dict:
 
 
 def labels() -> dict:
-    ls = load_jsonl(LABELS)
-    usable = [l for l in ls if l.get("reply_targets_this") and l.get("confidence", 0) >= 0.6]
-    causes = collections.Counter(c for l in usable if l.get("signal") == "failed" for c in l.get("causes", []))
+    ls = [l for l in load_jsonl(LABELS) if l.get("schema") == 2]
+    items = [(l["id"], it) for l in ls if l.get("reply_targets_this") for it in l["items"]]
+    causes = collections.Counter(it["cause"] for _, it in items if it["score"] < 0 and it.get("cause"))
     pairs = {p["id"]: p for p in load_jsonl(HISTORY / "pairs.jsonl")}
     misses = []
-    for l in usable:
-        p = pairs.get(l["id"])
-        if l.get("signal") != "failed" or not p or not l.get("unclear_items"):
+    for pid, it in items:
+        if it["score"] > -0.5:
             continue
         try:
-            at = calendar.timegm(time.strptime(p["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
+            at = calendar.timegm(time.strptime(pairs[pid]["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
         except (KeyError, TypeError, ValueError):
             at = 0
-        misses.append({"at": at, "text": ", ".join(l["unclear_items"])[:140], "note": l.get("evidence", "")[:140]})
+        misses.append({"at": at, "text": it["item"][:140], "note": it.get("evidence", "")[:140]})
     return {
         "misses": sorted(misses, key=lambda m: -m["at"])[:8],
         "labelled": len(ls),
-        "failed": sum(l.get("signal") == "failed" for l in usable),
-        "worked": sum(l.get("signal") == "worked" for l in usable),
+        "missed": sum(it["score"] < 0 for _, it in items),
+        "understood": sum(it["score"] > 0 for _, it in items),
+        "unreferenced": sum(it["score"] == 0 for _, it in items),
         "causes": [{"name": k.replace("_", " "), "n": v} for k, v in causes.most_common()],
     }
 
@@ -81,7 +81,6 @@ def rounds() -> list:
             "round": r["round"], "live": r["live"]["val"],
             "small": max(small) if small else None, "claude": claude[0] if claude else None,
             "deployed": r.get("deployed"), "source": r.get("deployed_source"),
-            "proposed": r.get("proposed"), "rejected": bool(r.get("rejected")),
             "pairs": r.get("new_pairs", 0), "trained": bool((r.get("training") or {}).get("ok")),
         })
     return out
@@ -93,32 +92,6 @@ def prompt() -> dict:
     return {"name": cur["name"], "text": path.read_text().strip() if path.exists() else "", "at": cur.get("at")}
 
 
-def proposed() -> dict | None:
-    p = load_json(PROMPTS / "proposed.json")
-    if not p:
-        return None
-    path = PROMPTS / f"{p['name']}.md"
-    return {**p, "text": path.read_text().strip() if path.exists() else ""}
-
-
-def decide(approve: bool) -> dict:
-    """Approve: the proposed prompt goes live. Reject: it is dropped."""
-    p = load_json(PROMPTS / "proposed.json")
-    if not p:
-        return {"ok": False, "error": "nothing proposed"}
-    rec_path = ROUNDS / f"r{p['round']:03d}.json"
-    rec = load_json(rec_path, {})
-    if approve:
-        atomic_write_json(PROMPTS / "current.json", {"name": p["name"], "round": p["round"], "at": time.time()})
-        rec.update({"deployed": p["name"], "deployed_source": p.get("source"), "rejected": False})
-    else:
-        rec["rejected"] = True
-    if rec:
-        atomic_write_json(rec_path, rec)
-    (PROMPTS / "proposed.json").unlink(missing_ok=True)
-    return {"ok": True}
-
-
 def payload() -> dict:
     return {
         "status": load_json(STATUS, {"phase": "idle", "detail": ""}),
@@ -126,7 +99,6 @@ def payload() -> dict:
         "labels": labels(),
         "rounds": rounds(),
         "prompt": prompt(),
-        "proposed": proposed(),
         "pairs": len(load_jsonl(DPO / "pairs.jsonl")),
         "adapter": load_json(ADAPTERS / "current.json"),
         "now": time.time(),
@@ -145,21 +117,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", kind)
         self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_POST(self):
-        if self.path not in ("/api/approve", "/api/reject"):
-            self.send_error(404)
-            return
-        # Same-origin only: the page itself, never another site's form.
-        origin = self.headers.get("Origin", "")
-        if origin and origin != f"http://127.0.0.1:{PORT}":
-            self.send_error(403)
-            return
-        body = json.dumps(decide(self.path == "/api/approve")).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body)
 

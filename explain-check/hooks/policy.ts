@@ -145,10 +145,10 @@ export function readAnswer(answer: string, points: string[]): Reading {
   }
 }
 
-export const SPLIT_SYSTEM = `You split a coding agent's message into the 3 most important things it tells the reader, so the reader can tick which ones they understood.
+export const SPLIT_SYSTEM = `You list the 3 key items of a coding agent's message, so the reader can tick which ones they understood.
 
 Rules:
-- Pick what matters most to the reader: the result or verdict, what changed, what they need to do or decide, and any caveat that changes what they should do.
+- Key items are the most important of: changes the agent made, results or findings, decisions the reader must make, caveats that change what they should do, concepts the message explains, and next steps for the reader.
 - Each item is a short label of at most 12 words.
 - Keep the message's own key terms, names, symbols and numbers exactly as written. Do NOT simplify, define or explain them: the point is to test whether the reader understood the message as written.
 - No commas in labels.

@@ -1,11 +1,33 @@
 """Joins labelled history and popup feedback into one list of examples.
 
-An example is one explanation the user saw, what they said or ticked about
-it, and a reward in [0, 1]. Popup answers are the user's own word and win
-over a label for the same message.
+An example is one message the user saw, its key items each scored -1 to 1
+for how well the user understood it (0 = never referenced), and a reward:
+the mean item score. Messages where no item has evidence either way are
+left out. Popup answers are the user's own word and win over a label for
+the same message.
 """
 
 from common import EVENTS, HISTORY, LABELS, load_json, load_jsonl, split_of
+
+
+def feedback_text(items: list[dict], note: str = "") -> str:
+    lines = []
+    for it in items:
+        why = f" ({it['cause'].replace('_', ' ')})" if it.get("cause") else ""
+        quote = f' — "{it["evidence"]}"' if it.get("evidence") else ""
+        lines.append(f"{it['score']:+.1f} [{it['kind']}] {it['item']}{why}{quote}")
+    if note:
+        lines.append(note)
+    return "\n".join(lines)
+
+
+def _example(id_, source, answer, request, type_, project, items, note=""):
+    reward = sum(it["score"] for it in items) / len(items)
+    return {
+        "id": id_, "source": source, "split": split_of(answer[:2000]), "type": type_, "project": project,
+        "request": request, "answer": answer, "items": items, "reward": reward,
+        "feedback": feedback_text(items, note),
+    }
 
 
 def from_history() -> list[dict]:
@@ -13,23 +35,12 @@ def from_history() -> list[dict]:
     out = []
     for l in load_jsonl(LABELS):
         p = pairs.get(l["id"])
-        if p is None or not l.get("reply_targets_this") or l.get("confidence", 0) < 0.6:
+        if p is None or l.get("schema") != 2 or not l.get("reply_targets_this"):
             continue
-        if l.get("signal") not in ("failed", "worked") or l.get("about") == "work":
-            continue
-        failed = l["signal"] == "failed"
-        note = f'User replied: "{p["reply"][:400]}"'
-        if failed:
-            items = ", ".join(l.get("unclear_items") or []) or "unspecified"
-            note += f"\nDid not land: {items}. Causes: {', '.join(l.get('causes') or []) or 'unspecified'}."
-        else:
-            note += "\nThis one was understood."
-        out.append({
-            "id": l["id"], "source": "history", "split": split_of(p["answer"][:2000]), "type": p["type"],
-            "project": p["project"], "request": p["request"], "answer": p["answer"],
-            "feedback": note, "reward": 0.0 if failed else 1.0,
-            "causes": l.get("causes") or [], "unclear": l.get("unclear_items") or [],
-        })
+        if not any(abs(it["score"]) >= 0.5 for it in l["items"]):
+            continue  # no evidence either way
+        out.append(_example(l["id"], "history", p["answer"], p["request"], p["type"], p["project"], l["items"],
+                            f'User replied: "{p["reply"][:300]}"'))
     return out
 
 
@@ -40,19 +51,12 @@ def from_popups() -> list[dict]:
         fb = (e or {}).get("feedback")
         if not fb or not e.get("points"):
             continue
-        n = len(e["points"])
-        reward = 0.0 if fb.get("none") else len(fb.get("understood", [])) / n
-        lines = [f"Understood: {', '.join(fb.get('understood') or []) or 'nothing'}",
-                 f"Did not understand: {', '.join(fb.get('notUnderstood') or []) or 'nothing'}"]
-        if fb.get("other"):
-            lines.append(f'User note: "{fb["other"]}"')
-        out.append({
-            "id": e["id"], "source": "popup", "split": split_of(e["answer"][:2000]),
-            "type": "report" if e.get("toolCalls", 0) > 0 else "concept",
-            "project": e.get("cwd", ""), "request": e.get("prompt", ""), "answer": e["answer"],
-            "feedback": "\n".join(lines), "reward": reward,
-            "causes": [], "unclear": fb.get("notUnderstood") or [],
-        })
+        got = set() if fb.get("none") else set(fb.get("understood") or [])
+        items = [{"item": p, "kind": "result", "score": 1.0 if p in got else -1.0, "cause": None, "evidence": "popup"}
+                 for p in e["points"]]
+        note = f'User note: "{fb["other"]}"' if fb.get("other") else ""
+        out.append(_example(e["id"], "popup", e["answer"], e.get("prompt", ""),
+                            "report" if e.get("toolCalls", 0) > 0 else "concept", e.get("cwd", ""), items, note))
     return out
 
 
