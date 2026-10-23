@@ -25,7 +25,7 @@ def from_history() -> list[dict]:
         else:
             note += "\nThis one was understood."
         out.append({
-            "id": l["id"], "source": "history", "split": split_of(l["id"]), "type": p["type"],
+            "id": l["id"], "source": "history", "split": split_of(p["answer"][:2000]), "type": p["type"],
             "project": p["project"], "request": p["request"], "answer": p["answer"],
             "feedback": note, "reward": 0.0 if failed else 1.0,
             "causes": l.get("causes") or [], "unclear": l.get("unclear_items") or [],
@@ -47,7 +47,7 @@ def from_popups() -> list[dict]:
         if fb.get("other"):
             lines.append(f'User note: "{fb["other"]}"')
         out.append({
-            "id": e["id"], "source": "popup", "split": split_of(e.get("parentId") or e["id"]),
+            "id": e["id"], "source": "popup", "split": split_of(e["answer"][:2000]),
             "type": "report" if e.get("toolCalls", 0) > 0 else "concept",
             "project": e.get("cwd", ""), "request": e.get("prompt", ""), "answer": e["answer"],
             "feedback": "\n".join(lines), "reward": reward,
@@ -58,4 +58,5 @@ def from_popups() -> list[dict]:
 
 def all_examples() -> list[dict]:
     popups = from_popups()
-    return popups + from_history()
+    rated = {e["answer"][:2000] for e in popups}
+    return popups + [e for e in from_history() if e["answer"][:2000] not in rated]

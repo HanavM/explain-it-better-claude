@@ -5,6 +5,7 @@ commands, interrupts and compaction summaries are dropped, and injected
 wrapper text (IDE selections, browser instructions) is stripped.
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -26,6 +27,11 @@ def _is_automatic(text: str) -> bool:
         or "Request interrupted" in t
         or t.startswith("This session is being continued from a previous conversation")
     )
+
+
+def pair_id(session: str, answer: str) -> str:
+    """Stable across re-ingests: the same message always gets the same id."""
+    return "h-" + hashlib.sha1((session + answer[:2000]).encode()).hexdigest()[:12]
 
 
 def turn_type(tools: int, chars: int) -> str:
@@ -70,7 +76,7 @@ def mine_session(path: Path) -> list[dict]:
             if saw_agent and agent_texts:
                 answer = agent_texts[-1]
                 rows.append({
-                    "id": f"h-{path.stem[:8]}-{len(rows)}",
+                    "id": pair_id(path.stem, answer),
                     "project": project,
                     "session": path.stem,
                     "ts": d.get("timestamp"),

@@ -1,5 +1,6 @@
 """Local dashboard: python3 dashboard/serve.py, then open http://127.0.0.1:8765"""
 
+import calendar
 import collections
 import json
 import sys
@@ -53,7 +54,10 @@ def labels() -> dict:
         p = pairs.get(l["id"])
         if l.get("signal") != "failed" or not p or not l.get("unclear_items"):
             continue
-        at = time.mktime(time.strptime(p["ts"][:19], "%Y-%m-%dT%H:%M:%S")) if p.get("ts") else 0
+        try:
+            at = calendar.timegm(time.strptime(p["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
+        except (KeyError, TypeError, ValueError):
+            at = 0
         misses.append({"at": at, "text": ", ".join(l["unclear_items"])[:140], "note": l.get("evidence", "")[:140]})
     return {
         "misses": sorted(misses, key=lambda m: -m["at"])[:8],

@@ -1,6 +1,7 @@
 """The small local model: reads recent feedback, proposes explanation prompts."""
 
 import random
+import re
 
 from common import ADAPTERS, BASE_MODEL, load_json
 
@@ -19,12 +20,13 @@ def tidy(text: str) -> str:
     seen, keep = set(), []
     for line in text.splitlines():
         line = line.strip()
-        if not line.startswith(("-", "*", "•")):
-            continue
-        key = line.lstrip("-*• ").lower().rstrip(".")
+        body = re.sub(r"^(?:[-*•]|\d+[.)])\s*", "", line)
+        if body == line:
+            continue  # not a list item
+        key = body.lower().rstrip(".")
         if key and key not in seen:
             seen.add(key)
-            keep.append("- " + line.lstrip("-*• "))
+            keep.append("- " + body)
     return "\n".join(keep[:10])
 
 MAX_PROMPT_CHARS = 1500
@@ -50,7 +52,9 @@ def build_state(current: str, examples: list[dict], seed: int, n_failed: int = 8
 def current_adapter():
     """Path of the newest trained adapter, or None before the first training."""
     v = load_json(ADAPTERS / "current.json")
-    return str(ADAPTERS / v["name"]) if v else None
+    if not v or not (ADAPTERS / v["name"] / "adapters.safetensors").exists():
+        return None
+    return str(ADAPTERS / v["name"])
 
 
 def propose(state: str, k: int = 4, temperature: float = 0.9) -> list[str]:

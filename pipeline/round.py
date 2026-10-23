@@ -15,6 +15,7 @@ Usage: python round.py [--k 4] [--n 12] [--no-train] [--no-deploy]
 import argparse
 import json
 import random
+import string
 import shutil
 import subprocess
 import sys
@@ -76,23 +77,30 @@ def rewrite(example: dict, instructions: str) -> str:
 def judge(example: dict, rewrites: list[str], seed: int) -> list[float]:
     order = list(range(len(rewrites)))
     random.Random(seed).shuffle(order)
-    letters = "ABCDEFGH"
+    letters = string.ascii_uppercase
     blocks = [f"<rewrite id=\"{letters[j]}\">\n{rewrites[i][:6000]}\n</rewrite>" for j, i in enumerate(order)]
     prompt = (
         f"<request>\n{example['request'][:1500]}\n</request>\n\n"
         f"<original>\n{example['answer'][:6000]}\n</original>\n\n"
         f"<feedback>\n{example['feedback']}\n</feedback>\n\n" + "\n\n".join(blocks)
     )
-    got = {s["id"]: s for s in extract_json(claude(prompt, JUDGE_SYSTEM, model="sonnet"))["scores"]}
+    got = {str(s.get("id", "")).strip().upper()[-1:]: s for s in extract_json(claude(prompt, JUDGE_SYSTEM, model="sonnet"))["scores"]}
+    if set(got) != set(letters[: len(rewrites)]):
+        raise ValueError(f"judge scored {sorted(got)}, expected {letters[:len(rewrites)]}")
     scores = [0.0] * len(rewrites)
     for j, i in enumerate(order):
-        s = got.get(letters[j], {})
-        scores[i] = float(s.get("understand", 0)) * (1.0 if s.get("faithful", True) else 0.3)
+        s = got[letters[j]]
+        faithful = str(s.get("faithful", True)).lower() != "false"
+        scores[i] = float(s["understand"]) * (1.0 if faithful else 0.3)
     return scores
 
 
+class RoundAborted(Exception):
+    pass
+
+
 def evaluate(arms: list[str], batch: list[dict], seed: int, label: str) -> list[float]:
-    """Mean judged score of each arm over the batch."""
+    """Mean judged score of each arm over the batch; aborts if too little was judged."""
     jobs = [(ei, ai) for ei in range(len(batch)) for ai in range(len(arms))]
     texts: dict = {}
     with ThreadPoolExecutor(6) as pool:
@@ -118,7 +126,9 @@ def evaluate(arms: list[str], batch: list[dict], seed: int, label: str) -> list[
             except Exception as e:
                 print(f"judge failed: {e}", file=sys.stderr)
             set_status("judging", f"{label}: {i}/{len(futs)}")
-    return [t / c if c else 0.0 for t, c in zip(totals, counts)]
+    if min(counts) < max(2, len(batch) // 2):
+        raise RoundAborted(f"{label}: only {min(counts)}/{len(batch)} examples judged")
+    return [t / c for t, c in zip(totals, counts)]
 
 
 def train_policy(round_no: int) -> dict | None:
@@ -237,4 +247,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RoundAborted as e:
+        set_status("idle", f"round aborted: {e}")
+        sys.exit(f"round aborted: {e}")
+    except Exception as e:
+        set_status("idle", f"round failed: {e}")
+        raise
