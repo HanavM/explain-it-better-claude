@@ -6,8 +6,9 @@
 3. Judge: Claude scores each rewrite against what the user actually said.
 4. Train: candidate pairs with a clear score gap become DPO pairs; the small
    model is retrained on every pair so far.
-5. Deploy: the best candidate goes live only if it beats the live prompt on
-   the val split AND on the test split it never saw.
+5. Propose: the best candidate is staged for approval only if it beats the
+   live prompt on the val split AND on the test split it never saw. It goes
+   live when approved on the dashboard.
 
 Usage: python round.py [--k 4] [--n 12] [--no-train] [--no-deploy]
 """
@@ -163,10 +164,11 @@ def train_policy(round_no: int) -> dict | None:
     return {"ok": True, "adapter": name, "pairs": len(rows), "iters": iters, "secs": round(time.time() - t0)}
 
 
-def deploy(round_no: int, text: str) -> str:
+def propose_deploy(round_no: int, text: str, info: dict) -> str:
+    """Stages a prompt for approval on the dashboard; it is not live yet."""
     name = f"v{round_no:03d}"
     atomic_write_text(PROMPTS / f"{name}.md", text.strip() + "\n")
-    atomic_write_json(PROMPTS / "current.json", {"name": name, "round": round_no, "at": time.time()})
+    atomic_write_json(PROMPTS / "proposed.json", {"name": name, "round": round_no, "at": time.time(), **info})
     return name
 
 
@@ -235,15 +237,18 @@ def main() -> None:
         t_live, t_best = evaluate([live_text, candidates[best]], test, seed + 500, "test")
         record["test"] = {"live": round(t_live, 2), "best": round(t_best, 2)}
         if t_best > t_live:
-            deployed = deploy(round_no, candidates[best])
-    record["deployed"] = deployed
+            deployed = propose_deploy(round_no, candidates[best], {
+                "source": sources[best], "val": round(cand_scores[best], 2), "live_val": round(live_score, 2),
+                "test": round(t_best, 2), "live_test": round(t_live, 2), "live_name": live_name})
+    record["proposed"] = deployed
+    record["deployed"] = None
     record["deployed_source"] = sources[best] if deployed else None
 
     record["training"] = None if args.no_train or new_pairs == 0 else train_policy(round_no)
     record["secs"] = round(time.time() - started)
     atomic_write_json(ROUNDS / f"r{round_no:03d}.json", record)
-    set_status("idle", f"round {round_no} done" + (f", deployed {deployed}" if deployed else ""))
-    print(json.dumps({k: record[k] for k in ("round", "live", "best", "new_pairs", "deployed", "secs")}, indent=1))
+    set_status("idle", f"round {round_no} done" + (f", {deployed} waiting for approval" if deployed else ""))
+    print(json.dumps({k: record[k] for k in ("round", "live", "best", "new_pairs", "proposed", "secs")}, indent=1))
 
 
 if __name__ == "__main__":

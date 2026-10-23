@@ -58,6 +58,14 @@ button.tbl:hover { color: var(--ink); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 td, th { text-align: left; padding: 4px 6px; border-top: 1px solid var(--border); }
 th { color: var(--ink-2); font-weight: 500; }
+.proposal { margin-bottom: 12px; border-color: var(--s1); }
+.cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cap { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.actions { display: flex; gap: 8px; margin-top: 14px; }
+.btn { font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn.primary { background: var(--s1); border-color: var(--s1); color: #fff; }
+.btn:disabled { opacity: .5; cursor: default; }
+@media (max-width: 760px) { .cmp { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } .grid2 { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -67,6 +75,15 @@ th { color: var(--ink-2); font-weight: 500; }
     <h1>Explainer RL</h1>
     <div class="status"><span class="dot" id="dot"></span><span id="phase">…</span><span class="chip" id="version">v000</span></div>
   </header>
+
+  <section class="card proposal" id="proposal" hidden>
+    <h2><span>New prompt to review · <span id="pr-name"></span></span><span class="legend muted" id="pr-meta"></span></h2>
+    <div class="cmp">
+      <div><div class="cap">Proposed</div><pre id="pr-new"></pre></div>
+      <div><div class="cap">Live now</div><pre id="pr-old"></pre></div>
+    </div>
+    <div class="actions"><button class="btn primary" id="approve">Approve</button><button class="btn" id="reject">Reject</button></div>
+  </section>
 
   <section class="tiles">
     <div class="card tile"><div class="label">Understood · 7 days</div><div class="value" id="t-rate">–</div><div class="sub" id="t-rate-sub">popup points</div></div>
@@ -192,7 +209,7 @@ function render() {
 
   const rb = $('c-rounds');
   if (!rounds.length) empty(rb, 'No rounds yet');
-  else if (tables.rounds) table(rb, ['Round', 'Live', 'Small', 'Claude', 'Deployed', 'Pairs'], rounds.map(r => [r.round, r.live, r.small ?? '–', r.claude ?? '–', r.deployed ? `${r.deployed} (${r.source})` : '–', r.pairs]));
+  else if (tables.rounds) table(rb, ['Round', 'Live', 'Small', 'Claude', 'Live after', 'Pairs'], rounds.map(r => [r.round, r.live, r.small ?? '–', r.claude ?? '–', r.deployed ? `${r.deployed} (${r.source})` : r.proposed ? (r.rejected ? 'rejected' : 'pending') : '–', r.pairs]));
   else lineChart(rb, rounds.map(r => 'R' + r.round), [
     { name: 'Live', color: css('--s1'), values: rounds.map(r => r.live) },
     { name: 'Small', color: css('--s2'), values: rounds.map(r => r.small) },
@@ -214,10 +231,25 @@ function render() {
     : '<li class="muted">None yet. Popups fill this.</li>';
 
   $('miss-src').textContent = p.misses.length ? 'popups' : 'from history';
+  const pr = data.proposed;
+  $('proposal').hidden = !pr;
+  if (pr) {
+    $('pr-name').textContent = pr.name;
+    $('pr-meta').textContent = `${pr.source === 'claude' ? 'Claude' : 'Small model'} · test ${pr.test} vs ${pr.live_test}`;
+    $('pr-new').textContent = pr.text;
+    $('pr-old').textContent = prompt.text || '(default style)';
+  }
   $('prompt').textContent = prompt.text || 'None yet. Claude Code is using its default style.';
   $('prompt-meta').textContent = prompt.at ? `deployed ${ago(prompt.at)} ago` : '';
 }
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function decide(path) {
+  $('approve').disabled = $('reject').disabled = true;
+  try { await fetch(path, { method: 'POST' }); } finally { $('approve').disabled = $('reject').disabled = false; load(); }
+}
+$('approve').addEventListener('click', () => decide('/api/approve'));
+$('reject').addEventListener('click', () => decide('/api/reject'));
 
 document.querySelectorAll('button.tbl').forEach(b => b.addEventListener('click', () => {
   tables[b.dataset.t] = !tables[b.dataset.t]; b.textContent = tables[b.dataset.t] ? 'Chart' : 'Table'; render();

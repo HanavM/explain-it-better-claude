@@ -9,7 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
-from common import ADAPTERS, DPO, EVENTS, HISTORY, LABELS, PROMPTS, ROUNDS, STATUS, load_json, load_jsonl  # noqa: E402
+from common import (ADAPTERS, DPO, EVENTS, HISTORY, LABELS, PROMPTS, ROUNDS, STATUS, atomic_write_json, load_json,
+                    load_jsonl)  # noqa: E402
 
 PAGE = Path(__file__).with_name("index.html")
 PORT = 8765
@@ -80,6 +81,7 @@ def rounds() -> list:
             "round": r["round"], "live": r["live"]["val"],
             "small": max(small) if small else None, "claude": claude[0] if claude else None,
             "deployed": r.get("deployed"), "source": r.get("deployed_source"),
+            "proposed": r.get("proposed"), "rejected": bool(r.get("rejected")),
             "pairs": r.get("new_pairs", 0), "trained": bool((r.get("training") or {}).get("ok")),
         })
     return out
@@ -91,6 +93,32 @@ def prompt() -> dict:
     return {"name": cur["name"], "text": path.read_text().strip() if path.exists() else "", "at": cur.get("at")}
 
 
+def proposed() -> dict | None:
+    p = load_json(PROMPTS / "proposed.json")
+    if not p:
+        return None
+    path = PROMPTS / f"{p['name']}.md"
+    return {**p, "text": path.read_text().strip() if path.exists() else ""}
+
+
+def decide(approve: bool) -> dict:
+    """Approve: the proposed prompt goes live. Reject: it is dropped."""
+    p = load_json(PROMPTS / "proposed.json")
+    if not p:
+        return {"ok": False, "error": "nothing proposed"}
+    rec_path = ROUNDS / f"r{p['round']:03d}.json"
+    rec = load_json(rec_path, {})
+    if approve:
+        atomic_write_json(PROMPTS / "current.json", {"name": p["name"], "round": p["round"], "at": time.time()})
+        rec.update({"deployed": p["name"], "deployed_source": p.get("source"), "rejected": False})
+    else:
+        rec["rejected"] = True
+    if rec:
+        atomic_write_json(rec_path, rec)
+    (PROMPTS / "proposed.json").unlink(missing_ok=True)
+    return {"ok": True}
+
+
 def payload() -> dict:
     return {
         "status": load_json(STATUS, {"phase": "idle", "detail": ""}),
@@ -98,6 +126,7 @@ def payload() -> dict:
         "labels": labels(),
         "rounds": rounds(),
         "prompt": prompt(),
+        "proposed": proposed(),
         "pairs": len(load_jsonl(DPO / "pairs.jsonl")),
         "adapter": load_json(ADAPTERS / "current.json"),
         "now": time.time(),
@@ -116,6 +145,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", kind)
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        if self.path not in ("/api/approve", "/api/reject"):
+            self.send_error(404)
+            return
+        # Same-origin only: the page itself, never another site's form.
+        origin = self.headers.get("Origin", "")
+        if origin and origin != f"http://127.0.0.1:{PORT}":
+            self.send_error(403)
+            return
+        body = json.dumps(decide(self.path == "/api/approve")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body)
 
