@@ -103,7 +103,12 @@ def label_one(p: dict) -> dict:
 
     scored = extract_json(claude(render_scoring(p, items), SCORE_SYSTEM, model="sonnet"))
     targets = bool(scored.get("reply_targets_this", True))
-    by_index = {int(s.get("i", -1)): s for s in scored.get("items", []) if str(s.get("i", "")).lstrip("-").isdigit()}
+    by_index = {}
+    for s in scored.get("items", []):
+        try:
+            by_index[int(float(s["i"]))] = s
+        except (KeyError, TypeError, ValueError):
+            continue
     if targets and set(by_index) != set(range(len(items))):
         raise ValueError(f"scored items {sorted(by_index)} for {len(items)} items")
     for i, it in enumerate(items):

@@ -87,6 +87,7 @@ def judge(example: dict, rewrites: list[str], seed: int) -> list[float]:
         f"<request>\n{example['request'][:1500]}\n</request>\n\n"
         f"<original>\n{example['answer'][:6000]}\n</original>\n\n"
         f"<key_items>\n{example['feedback']}\n</key_items>\n\n" + "\n\n".join(blocks)
+        + f"\n\nEach rewrite's items list must have exactly {n_items} numbers, in key_items order."
     )
     got = {str(s.get("id", "")).strip().upper()[-1:]: s for s in extract_json(claude(prompt, JUDGE_SYSTEM, model="sonnet"))["scores"]}
     if set(got) != set(letters[: len(rewrites)]):
