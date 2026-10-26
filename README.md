@@ -1,6 +1,6 @@
 # explainer-rl
 
-RL loop that tunes how Claude Code explains its work to me.
+Claude is great at coding but sucks at explaining what it did. This repo is a RL loop that tunes how Claude Code explains its technical work to me. 
 
 - `explain-check/` Claude Code plugin: popup feedback + injects the live prompt
 - `pipeline/` ingest → label → round (propose, replay, judge, DPO, deploy)
