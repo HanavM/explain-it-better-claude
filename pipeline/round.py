@@ -277,7 +277,7 @@ def main() -> None:
         d, p = gain(val_rows, pick + 1, 0, seed)
         gate["val"] = {"gain": round(d, 2), "p": round(p, 3)}
         if not args.no_deploy and d >= DEPLOY_MARGIN and p >= 0.9:
-            test = sample(examples, "test", 12, seed)
+            test = sample(examples, "test", 20, seed)
             (t_live, t_pick), t_rows = evaluate([live_text, candidates[pick]], test, seed + 500, "test")
             td, tp = gain(t_rows, 1, 0, seed + 1)
             gate["test"] = {"live": round(t_live, 2), "pick": round(t_pick, 2), "gain": round(td, 2), "p": round(tp, 3)}

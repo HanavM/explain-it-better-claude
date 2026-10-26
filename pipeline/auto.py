@@ -1,13 +1,18 @@
 """Supervisor: decides on its own when to train, from data alone.
 
-launchd runs it whenever the popup writes a new record (every eligible
-coding turn does, asked or not), so it wakes when new data arrives, never on
-a clock. Each run mines new transcripts, labels the new messages (capped, to
-bound Claude calls), then starts a round once enough new feedback has built
-up since the last one. A popup answer is the user's own word, so it counts
-for more than a label inferred from a reply.
+Three data sources feed rounds: all past sessions (labelled once, as a
+backfill), each day's sessions (labelled every night), and popup answers
+(written live). launchd runs this in two ways:
 
-Usage: python auto.py [--dry-run]
+- `--nightly`, once a night: mines transcripts and labels the day's new
+  sessions, then checks whether a round is due.
+- plain, whenever the popup writes a new record: checks whether a round is due.
+
+A round starts once enough new feedback has built up since the last one,
+whatever time it is. A popup answer is the user's own word, so it counts for
+more than a label inferred from a reply.
+
+Usage: python auto.py [--nightly] [--dry-run]
 """
 
 import fcntl
@@ -23,7 +28,6 @@ LOCK = DATA / "auto.lock"
 STATE = DATA / "auto.json"       # feedback counts as of the last round, and of the last failure
 MIN_NEW = 15                     # new feedback needed for a round
 POPUP_WEIGHT = 3                 # one popup answer counts as this many labels
-LABEL_CAP = 60                   # labels per run
 
 
 def counts() -> dict:
@@ -44,7 +48,7 @@ def round_running() -> bool:
     return subprocess.run(["pgrep", "-f", "pipeline/round.py"], capture_output=True).returncode == 0
 
 
-def main(dry_run: bool = False) -> None:
+def main(nightly: bool = False, dry_run: bool = False) -> None:
     DATA.mkdir(parents=True, exist_ok=True)
     with open(LOCK, "w") as lock:
         try:
@@ -56,9 +60,9 @@ def main(dry_run: bool = False) -> None:
             print("a round is already running")
             return
 
-        if not dry_run:
+        if nightly and not dry_run:
             ingest.main()
-            label.main(LABEL_CAP)
+            label.main(batch=time.strftime("nightly-%Y-%m-%d"))
 
         state = load_json(STATE, {})
         now = counts()
@@ -82,4 +86,4 @@ def main(dry_run: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    main("--dry-run" in sys.argv)
+    main(nightly="--nightly" in sys.argv, dry_run="--dry-run" in sys.argv)

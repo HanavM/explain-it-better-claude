@@ -120,7 +120,7 @@ def label_one(p: dict) -> dict:
             "reply_targets_this": targets, "items": items}
 
 
-def main(limit: int | None = None, workers: int = 6) -> None:
+def main(limit: int | None = None, workers: int = 6, batch: str | None = None) -> None:
     pairs = load_jsonl(HISTORY / "pairs.jsonl")
     done = {l["id"] for l in load_jsonl(LABELS) if l.get("schema") == 2}
     todo = [p for p in pairs if p["id"] not in done and p["type"] != "other"][:limit]
@@ -131,7 +131,8 @@ def main(limit: int | None = None, workers: int = 6) -> None:
         futures = {pool.submit(label_one, p): p for p in todo}
         for i, f in enumerate(as_completed(futures), 1):
             try:
-                append_jsonl(LABELS, f.result())
+                # `batch` marks which nightly run labelled it; the backfill has none.
+                append_jsonl(LABELS, {**f.result(), "batch": batch} if batch else f.result())
             except Exception as e:
                 failures += 1
                 print(f"skip {futures[f]['id']}: {e}", file=sys.stderr)
