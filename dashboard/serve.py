@@ -124,8 +124,16 @@ def prompt() -> dict:
     return {"name": cur["name"], "text": path.read_text().strip() if path.exists() else "", "at": cur.get("at")}
 
 
+def auto() -> dict:
+    import auto as sup
+    state = load_json(sup.STATE, {})
+    return {"new": sup.new_feedback(sup.counts(), state), "need": sup.MIN_NEW,
+            "last": state.get("at"), "failed": state.get("failed_at")}
+
+
 def payload() -> dict:
     return {
+        "auto": auto(),
         "status": load_json(STATUS, {"phase": "idle", "detail": ""}),
         "popups": popups(),
         "labels": labels(),

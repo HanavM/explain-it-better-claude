@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hanav.explainer-rl.auto</string>
+    <key>ProgramArguments</key>
+    <array><string>/usr/bin/caffeinate</string><string>-i</string><string>/Users/hanavmodasiya/explainer-rl/.venv/bin/python</string><string>/Users/hanavmodasiya/explainer-rl/pipeline/auto.py</string></array>
+    <key>StartInterval</key><integer>3600</integer><key>RunAtLoad</key><true/>
+    <key>WorkingDirectory</key>
+    <string>/Users/hanavmodasiya/explainer-rl</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/hanavmodasiya/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/hanavmodasiya/explainer-rl/data/auto.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/hanavmodasiya/explainer-rl/data/auto.log</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

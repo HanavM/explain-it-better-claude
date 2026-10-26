@@ -85,7 +85,7 @@ ul.pops .res { font-size: 12px; white-space: nowrap; }
 <main>
   <header>
     <h1>Explainer RL</h1>
-    <div class="status"><span class="dot" id="dot"></span><span id="phase">…</span><span class="chip" id="version">v000</span></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="phase">…</span><span class="chip" id="next" title="A round starts on its own once enough new feedback builds up (checked hourly)"></span><span class="chip" id="version">v000</span></div>
   </header>
 
   <section class="tiles">
@@ -234,6 +234,7 @@ function render() {
   $('dot').className = 'dot' + (busy ? ' on' : '');
   $('phase').textContent = busy ? `${status.phase} · ${status.detail}` : (status.detail || 'idle');
   $('version').textContent = prompt.name;
+  $('next').textContent = busy ? 'round running' : `next round: ${Math.min(data.auto.new, data.auto.need)}/${data.auto.need} new feedback`;
 
   $('t-rate').textContent = pct(p.week_rate);
   $('t-pop').textContent = p.answered;
