@@ -7,9 +7,9 @@ RL loop that tunes how Claude Code explains its work to me.
 - `dashboard/` `python3 dashboard/serve.py` → http://127.0.0.1:8765
 - `prompts/` deployed prompt versions (`current.json` points at the live one)
 
-Rounds start on their own: `pipeline/auto.py` runs hourly, mines and labels new
-sessions, and starts a round once 15 new pieces of feedback have built up (a popup
-answer counts as 3), at most once every 6 hours. Install it and the always-on dashboard:
+Rounds start on their own, from data alone: `pipeline/auto.py` runs whenever the popup
+writes a new record, mines and labels new sessions, and starts a round once 15 new pieces
+of feedback have built up since the last one (a popup answer counts as 3). Install it and the always-on dashboard:
 
 ```
 cp launchd/*.plist ~/Library/LaunchAgents/

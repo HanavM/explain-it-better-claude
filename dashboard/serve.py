@@ -128,7 +128,7 @@ def auto() -> dict:
     import auto as sup
     state = load_json(sup.STATE, {})
     return {"new": sup.new_feedback(sup.counts(), state), "need": sup.MIN_NEW,
-            "last": state.get("at"), "failed": state.get("failed_at")}
+            "last": state.get("at"), "failed": (state.get("failed") or {}).get("at")}
 
 
 def payload() -> dict:

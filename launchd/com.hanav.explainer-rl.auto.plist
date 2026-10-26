@@ -6,7 +6,10 @@
     <string>com.hanav.explainer-rl.auto</string>
     <key>ProgramArguments</key>
     <array><string>/usr/bin/caffeinate</string><string>-i</string><string>/Users/hanavmodasiya/explainer-rl/.venv/bin/python</string><string>/Users/hanavmodasiya/explainer-rl/pipeline/auto.py</string></array>
-    <key>StartInterval</key><integer>3600</integer><key>RunAtLoad</key><true/>
+    <key>WatchPaths</key>
+    <array><string>/Users/hanavmodasiya/explainer-rl/data/events</string></array>
+    <key>ThrottleInterval</key><integer>300</integer>
+    <key>RunAtLoad</key><true/>
     <key>WorkingDirectory</key>
     <string>/Users/hanavmodasiya/explainer-rl</string>
     <key>EnvironmentVariables</key>

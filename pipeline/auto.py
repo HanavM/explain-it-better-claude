@@ -1,8 +1,10 @@
-"""Hourly supervisor (run by launchd): decides on its own when to train.
+"""Supervisor: decides on its own when to train, from data alone.
 
-Each run mines new transcripts, labels the new messages (capped, to bound
-Claude calls), then starts a round once enough new feedback has built up
-since the last one. A popup answer is the user's own word, so it counts
+launchd runs it whenever the popup writes a new record (every eligible
+coding turn does, asked or not), so it wakes when new data arrives, never on
+a clock. Each run mines new transcripts, labels the new messages (capped, to
+bound Claude calls), then starts a round once enough new feedback has built
+up since the last one. A popup answer is the user's own word, so it counts
 for more than a label inferred from a reply.
 
 Usage: python auto.py [--dry-run]
@@ -18,11 +20,9 @@ import label
 from common import DATA, EVENTS, LABELS, ROOT, atomic_write_json, load_json, load_jsonl, set_status
 
 LOCK = DATA / "auto.lock"
-STATE = DATA / "auto.json"       # feedback counts as of the last round, and failures
+STATE = DATA / "auto.json"       # feedback counts as of the last round, and of the last failure
 MIN_NEW = 15                     # new feedback needed for a round
 POPUP_WEIGHT = 3                 # one popup answer counts as this many labels
-MIN_GAP_H = 6                    # at most one round per this many hours
-RETRY_H = 6                      # wait after a failed round before trying again
 LABEL_CAP = 60                   # labels per run
 
 
@@ -63,10 +63,12 @@ def main(dry_run: bool = False) -> None:
         state = load_json(STATE, {})
         now = counts()
         new = new_feedback(now, state)
-        since_round = time.time() - state.get("at", 0)
-        since_fail = time.time() - state.get("failed_at", 0)
-        print(f"{new}/{MIN_NEW} new feedback, last round {since_round / 3600:.1f}h ago")
-        if new < MIN_NEW or since_round < MIN_GAP_H * 3600 or since_fail < RETRY_H * 3600 or dry_run:
+        # After a failed round, wait for fresh data rather than retrying the
+        # same inputs on every wake.
+        failed = state.get("failed")
+        is_retry_ready = failed is None or new_feedback(now, failed) > 0
+        print(f"{new}/{MIN_NEW} new feedback" + ("" if is_retry_ready else ", last round failed: waiting for new data"))
+        if new < MIN_NEW or not is_retry_ready or dry_run:
             return
 
         started = time.time()
@@ -75,8 +77,8 @@ def main(dry_run: bool = False) -> None:
             # Counts from before the round: feedback that arrived during it is new next time.
             atomic_write_json(STATE, {**now, "at": started})
         else:
-            atomic_write_json(STATE, {**state, "failed_at": time.time()})
-            set_status("failed", f"automatic round failed (exit {r.returncode}), retrying in {RETRY_H}h")
+            atomic_write_json(STATE, {**state, "failed": {**now, "at": time.time()}})
+            set_status("failed", f"automatic round failed (exit {r.returncode}), retries when new data arrives")
 
 
 if __name__ == "__main__":
