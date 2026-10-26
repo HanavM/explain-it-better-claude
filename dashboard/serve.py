@@ -16,6 +16,37 @@ PAGE = Path(__file__).with_name("index.html")
 PORT = 8765
 
 
+APPS = {"cli": "Terminal", "claude-vscode": "VS Code", "claude-desktop": "Desktop app"}
+_session_apps: dict = {}
+
+
+def session_app(session: str) -> str:
+    """The app a session ran in, from its transcript (for records saved before `app` was logged)."""
+    if session not in _session_apps:
+        _session_apps[session] = ""
+        for path in (Path.home() / ".claude" / "projects").glob(f"*/{session}.jsonl"):
+            with path.open() as f:
+                for line in f:
+                    if '"entrypoint"' in line:
+                        _session_apps[session] = json.loads(line).get("entrypoint", "")
+                        break
+            break
+    return _session_apps[session]
+
+
+def popup_list(asked: list) -> list:
+    out = []
+    for e in sorted(asked, key=lambda e: -e["at"]):
+        app = e.get("app") or session_app(e.get("session", ""))
+        out.append({
+            "id": e["id"], "at": e["at"] / 1000, "trigger": e["trigger"],
+            "app": APPS.get(app, app or "unknown"), "cwd": e.get("cwd", ""),
+            "prompt": e.get("prompt", ""), "answer": e.get("answer", ""),
+            "points": e.get("points", []), "skipped": e.get("skipped", False), "feedback": e.get("feedback"),
+        })
+    return out
+
+
 def popups() -> dict:
     events = [e for e in (load_json(p) for p in sorted(EVENTS.glob("*.json"))) if e]
     asked = [e for e in events if e.get("trigger")]
@@ -42,6 +73,7 @@ def popups() -> dict:
         "week_rate": got / total if total else None,
         "daily": [{"day": d, "rate": a / b} for d, (a, b) in sorted(by_day.items()) if b],
         "misses": sorted(misses, key=lambda m: -m["at"])[:8],
+        "list": popup_list(asked),
     }
 
 

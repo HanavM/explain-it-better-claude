@@ -19,17 +19,21 @@ const long = (n: number) => 'word '.repeat(Math.ceil(n / 5)).slice(0, n)
 
 describe('isExplanation', () => {
   test('short replies are not explanations', () => {
-    expect(isExplanation(long(200), 5)).toBe(false)
+    expect(isExplanation(long(200), 5, 2)).toBe(false)
   })
-  test('a substantial message after tool work is', () => {
-    expect(isExplanation(long(700), 3)).toBe(true)
+  test('a substantial message after editing files is', () => {
+    expect(isExplanation(long(700), 3, 1)).toBe(true)
+  })
+  test('a turn that only read or ran commands is not, however long', () => {
+    expect(isExplanation(long(700), 5, 0)).toBe(false)
+    expect(isExplanation(long(3000), 5, 0)).toBe(false)
   })
   test('a no-tool answer needs to be long', () => {
-    expect(isExplanation(long(900), 0)).toBe(false)
-    expect(isExplanation(long(1600), 0)).toBe(true)
+    expect(isExplanation(long(900), 0, 0)).toBe(false)
+    expect(isExplanation(long(1600), 0, 0)).toBe(true)
   })
   test('a short message ending in a question is a question', () => {
-    expect(isExplanation(long(600) + '?', 2)).toBe(false)
+    expect(isExplanation(long(600) + '?', 2, 1)).toBe(false)
   })
 })
 

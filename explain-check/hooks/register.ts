@@ -2,6 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import {
   DEFAULTS,
+  EDIT_TOOLS,
   FRESH,
   NONE,
   SPLIT_SYSTEM,
@@ -25,10 +26,13 @@ type Explanation = {
   at: number
   session: string
   cwd: string
+  // Which app the session ran in: cli, claude-vscode, claude-desktop...
+  app: string
   origin: string
   prompt: string
   answer: string
   toolCalls: number
+  edits: number
   durationMs: number
   jargon: number
   eligible: boolean
@@ -44,6 +48,9 @@ const THROTTLE_KEY = 'throttle'
 const STATS_KEY = 'stats'
 // How long an automatic check waits for the prompt box to be empty.
 const GIVE_UP_MS = 120_000
+// Apps where a person is at the prompt even though Claude Code runs there as
+// an SDK host (isInteractive false, prompts arrive as origin 'sdk').
+const PERSON_APPS = new Set(['claude-vscode', 'claude-desktop'])
 type Stats = { asked: number; answered: number; skipped: number }
 
 function roll(): number {
@@ -106,14 +113,25 @@ async function livePrompt($: EngineInterface): Promise<string> {
 // The module's own state: reset when the mod reloads, which only drops an
 // in-flight check. Throttle and stats live in `$.store` and survive.
 let isInteractive = false
+let app = ''
 let isHumanTurn = false
 let origin = ''
 let toolCalls = 0
+let edits = 0
 let lastPrompt = ''
 let last: Explanation | null = null
 let pending: Pending | null = null
 let isAsking = false
 let promptSeq = 0
+
+// The prompt box's text, or '' on a host that has no box to read.
+async function typedText($: EngineInterface): Promise<string> {
+  try {
+    return (await $.prompt.read()).text.trim()
+  } catch {
+    return ''
+  }
+}
 
 async function replacePending($: EngineInterface, next: Pending | null): Promise<void> {
   const old = pending
@@ -134,7 +152,7 @@ async function drain($: EngineInterface): Promise<void> {
       return
     }
     // Never open over a half-typed prompt: try again in a few seconds.
-    if ((await $.prompt.read()).text.trim() !== '') {
+    if ((await typedText($)) !== '') {
       current.notBefore = now + 5000
       return
     }
@@ -148,7 +166,7 @@ async function drain($: EngineInterface): Promise<void> {
     // split ran; an automatic check would then land on top of that.
     const isStale =
       record.trigger === 'auto' &&
-      (promptSeq !== current.promptSeq || (await $.prompt.read()).text.trim() !== '')
+      (promptSeq !== current.promptSeq || (await typedText($)) !== '')
     if (record.points.length === 0 || isStale) {
       await saveUnasked($, record)
       return
@@ -181,23 +199,30 @@ async function drain($: EngineInterface): Promise<void> {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    isInteractive = e.isInteractive
+    app = (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) ?? ''
+    // The pipeline's own `claude -p` calls set EXPLAIN_CHECK_OFF, so they get
+    // neither checks nor the deployed prompt whatever app launched them.
+    const isOff = ((await $.env.get('EXPLAIN_CHECK_OFF')) ?? '') !== ''
+    isInteractive = !isOff && (e.isInteractive || PERSON_APPS.has(app))
     await $.command.register({
       name: 'explain-check',
       description: 'Rate the last explanation now; or `off`, `on`, `stats`',
     })
-    // Headless runs have no one to ask; they would only burn the daily budget.
+    // Headless runs (-p, the pipeline) have no one to ask; they would only burn
+    // the daily budget. VS Code and the desktop app count as interactive.
     if (isInteractive) $.clock.every(1000, () => void drain($))
     return next(e)
   })
 
   on('prompt.submit', async ($, e, next) => {
     toolCalls = 0
+    edits = 0
     promptSeq += 1
     origin = e.origin.kind
     // Task notifications, /loop wakeups, peer messages and the like start
     // turns too; only a person's own prompt makes a turn worth asking about.
-    isHumanTurn = origin === 'composer' || origin === 'bridge'
+    // In VS Code and the desktop app the person's own prompt arrives as 'sdk'.
+    isHumanTurn = origin === 'composer' || origin === 'bridge' || (origin === 'sdk' && PERSON_APPS.has(app))
     if (isHumanTurn && !e.text.trimStart().startsWith('/')) lastPrompt = e.text
     return next(e)
   })
@@ -219,6 +244,7 @@ export const register: Register = on => {
 
   on('tool.call', ($, e, next) => {
     toolCalls += 1
+    if (EDIT_TOOLS.has(e.tool)) edits += 1
     return next(e)
   })
 
@@ -226,17 +252,19 @@ export const register: Register = on => {
     if (!isInteractive || e.agentId !== undefined || e.reason !== 'answer' || e.answer.trim() === '') return next(e)
 
     const now = await $.clock.now()
-    const eligible = isExplanation(e.answer, toolCalls)
+    const eligible = isExplanation(e.answer, toolCalls, edits)
     const jargon = jargonScore(e.answer)
     const record: Explanation = {
       id: `${now}-${crypto.randomUUID().slice(0, 8)}`,
       at: now,
       session: await $.session.id(),
       cwd: await $.session.cwd(),
+      app,
       origin,
       prompt: isHumanTurn ? lastPrompt.slice(0, 4000) : '',
       answer: e.answer,
       toolCalls,
+      edits,
       durationMs: e.durationMs,
       jargon,
       eligible,

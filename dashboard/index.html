@@ -58,6 +58,26 @@ button.tbl:hover { color: var(--ink); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 td, th { text-align: left; padding: 4px 6px; border-top: 1px solid var(--border); }
 th { color: var(--ink-2); font-weight: 500; }
+ul.pops { list-style: none; margin: 0; padding: 0; }
+ul.pops > li { border-top: 1px solid var(--border); }
+ul.pops > li:first-child { border-top: 0; }
+ul.pops summary { display: grid; grid-template-columns: 150px 1fr auto; gap: 12px; align-items: baseline; padding: 8px 0; cursor: pointer; list-style: none; }
+ul.pops summary::-webkit-details-marker { display: none; }
+ul.pops summary::before { content: '▸'; color: var(--muted); position: absolute; margin-left: -14px; }
+ul.pops details[open] summary::before { content: '▾'; }
+ul.pops details { padding-left: 14px; }
+ul.pops .when { font-variant-numeric: tabular-nums; }
+ul.pops .when small, ul.pops .where small { display: block; color: var(--muted); font-size: 12px; }
+ul.pops .where { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.pops .res { font-size: 12px; white-space: nowrap; }
+.res.good { color: var(--good); } .res.bad { color: var(--bad); } .res.skip { color: var(--muted); }
+.pop-body { padding: 4px 0 14px; display: grid; gap: 10px; }
+.pop-body h3 { font-size: 12px; font-weight: 500; color: var(--ink-2); margin: 0 0 4px; }
+.pop-body pre { max-height: 320px; overflow: auto; background: var(--page); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.pop-body ul { margin: 0; padding-left: 18px; }
+.pop-body li.ok::marker { content: '✓  '; color: var(--good); }
+.pop-body li.no::marker { content: '✗  '; color: var(--bad); }
+@media (max-width: 760px) { ul.pops summary { grid-template-columns: 1fr auto; } ul.pops .where { grid-column: 1 / -1; grid-row: 2; } }
 @media (max-width: 760px) { .tiles { grid-template-columns: 1fr 1fr; } .grid2 { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -73,6 +93,11 @@ th { color: var(--ink-2); font-weight: 500; }
     <div class="card tile"><div class="label">Popups answered</div><div class="value" id="t-pop">–</div><div class="sub" id="t-pop-sub"></div></div>
     <div class="card tile"><div class="label">Past items missed</div><div class="value" id="t-hist">–</div><div class="sub" id="t-hist-sub"></div></div>
     <div class="card tile"><div class="label">Training pairs</div><div class="value" id="t-pairs">–</div><div class="sub" id="t-pairs-sub"></div></div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2><span>Popups</span><span class="legend muted" id="pops-n"></span></h2>
+    <ul class="pops" id="pops"></ul>
   </section>
 
   <section class="grid2">
@@ -174,6 +199,34 @@ function barChart(box, items) {
   });
 }
 
+const openPops = new Set();
+const when = t => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function popResult(e) {
+  if (e.skipped) return ['skip', 'Skipped'];
+  const f = e.feedback; if (!f) return ['skip', 'No answer'];
+  const got = f.none ? 0 : f.understood.length, n = e.points.length;
+  return [got === n ? 'good' : got === 0 ? 'bad' : '', `${got}/${n} understood`];
+}
+function renderPops(list) {
+  $('pops-n').textContent = list.length ? `${list.length} total` : '';
+  if (!list.length) { $('pops').innerHTML = '<li class="muted" style="padding:8px 0">No popups yet.</li>'; return; }
+  $('pops').innerHTML = list.map(e => {
+    const [cls, res] = popResult(e), f = e.feedback || {};
+    const project = e.cwd.split('/').filter(Boolean).pop() || e.cwd;
+    const pts = e.points.map(p => `<li class="${f.understood && f.understood.includes(p) && !f.none ? 'ok' : e.skipped ? '' : 'no'}">${esc(p)}</li>`).join('');
+    return `<li><details data-id="${esc(e.id)}"${openPops.has(e.id) ? ' open' : ''}>
+      <summary><span class="when">${when(e.at)}<small>${ago(e.at)} ago${e.trigger === 'manual' ? ' · manual' : ''}</small></span>
+        <span class="where">${esc(project)}<small>${esc(e.app)} · ${esc(e.cwd)}</small></span>
+        <span class="res ${cls}">${res}</span></summary>
+      <div class="pop-body">
+        ${e.prompt ? `<div><h3>What you asked</h3><pre>${esc(e.prompt)}</pre></div>` : ''}
+        <div><h3>Claude's message</h3><pre>${esc(e.answer)}</pre></div>
+        <div><h3>Popup options</h3><ul>${pts}</ul>${f.other ? `<p><b>You typed:</b> ${esc(f.other)}</p>` : ''}</div>
+      </div></details></li>`;
+  }).join('');
+  $('pops').querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => { d.open ? openPops.add(d.dataset.id) : openPops.delete(d.dataset.id); }));
+}
+
 function render() {
   if (!data) return;
   const { status, popups: p, labels: l, rounds, prompt, pairs, adapter } = data;
@@ -213,6 +266,7 @@ function render() {
     ? ms.map(m => `<li><div>${esc(m.text)}${m.note ? `<div class="note">${esc(m.note)}</div>` : ''}</div><time>${ago(m.at)}</time></li>`).join('')
     : '<li class="muted">None yet. Popups fill this.</li>';
 
+  renderPops(p.list);
   $('miss-src').textContent = p.misses.length ? 'popups' : 'from history';
   $('prompt').textContent = prompt.text || 'None yet. Claude Code is using its default style.';
   $('prompt-meta').textContent = prompt.at ? `deployed ${ago(prompt.at)} ago` : '';

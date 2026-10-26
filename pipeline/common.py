@@ -105,7 +105,8 @@ def claude(prompt: str, system: str, model: str = "sonnet", timeout: int = 300, 
     last_err = ""
     for attempt in range(retries + 1):
         try:
-            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=_CALL_CWD)
+            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=_CALL_CWD,
+                               env={**os.environ, "EXPLAIN_CHECK_OFF": "1"})
             if r.returncode == 0 and r.stdout.strip():
                 return r.stdout.strip()
             last_err = (r.stderr or r.stdout)[-300:]

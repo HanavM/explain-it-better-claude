@@ -30,12 +30,18 @@ export type Throttle = {
 
 export const FRESH: Throttle = { lastAskAt: 0, day: 0, asksToday: 0, skipStreak: 0, paused: false }
 
-// A turn is worth asking about when it is a substantial message after real
-// work, or a long standalone answer (concept explanations land here). Short
-// replies that are mostly a question back to the user are not explanations.
-export function isExplanation(answer: string, toolCalls: number, s: Settings = DEFAULTS): boolean {
+// Tools that change files: a turn that used one was actual coding.
+export const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+// A turn is worth asking about when it is a substantial message after changing
+// files, or a long standalone answer (concept explanations land here). Turns
+// that only looked things up or ran commands (status checks, starting a
+// server) are not coding, so they are never asked about. Short replies that
+// are mostly a question back to the user are not explanations.
+export function isExplanation(answer: string, toolCalls: number, edits: number, s: Settings = DEFAULTS): boolean {
   const text = answer.trim()
   if (text.length < s.minChars) return false
+  if (toolCalls > 0 && edits === 0) return false
   if (toolCalls === 0 && text.length < s.minCharsWithoutTools) return false
   if (text.length < 800 && text.endsWith('?')) return false
   return true
