@@ -202,6 +202,7 @@ function barChart(box, items) {
 const openPops = new Set();
 const when = t => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 function popResult(e) {
+  if (e.excluded) return ['skip', 'Not used'];
   if (e.skipped) return ['skip', 'Skipped'];
   const f = e.feedback; if (!f) return ['skip', 'No answer'];
   const got = f.none ? 0 : f.understood.length, n = e.points.length;
@@ -221,7 +222,7 @@ function renderPops(list) {
       <div class="pop-body">
         ${e.prompt ? `<div><h3>What you asked</h3><pre>${esc(e.prompt)}</pre></div>` : ''}
         <div><h3>Claude's message</h3><pre>${esc(e.answer)}</pre></div>
-        <div><h3>Popup options</h3><ul>${pts}</ul>${f.other ? `<p><b>You typed:</b> ${esc(f.other)}</p>` : ''}</div>
+        <div><h3>Popup options</h3><ul>${pts}</ul>${f.other ? `<p><b>You typed:</b> ${esc(f.other)}</p>` : ''}${e.excluded ? `<p class="muted">Not used for training: ${esc(e.excluded)}</p>` : ''}</div>
       </div></details></li>`;
   }).join('');
   $('pops').querySelectorAll('details').forEach(d => d.addEventListener('toggle', () => { d.open ? openPops.add(d.dataset.id) : openPops.delete(d.dataset.id); }));

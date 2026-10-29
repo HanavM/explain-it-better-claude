@@ -154,12 +154,19 @@ export function readAnswer(answer: string, points: string[]): Reading {
   }
 }
 
-export const SPLIT_SYSTEM = `A coding agent sent the reader the message below. The reader will be shown your labels and tick the ones they understood, so pick only the parts a reader could plausibly fail to understand.
+export const SPLIT_SYSTEM = `A coding agent sent the reader the message below, in reply to the reader's request. The reader will be shown your labels and tick the ones they understood, so pick only the parts a reader could plausibly fail to understand.
+
+Stay inside what the reader asked for:
+- The FIRST label names the direct answer to their request, phrased from the request itself (request "how does X pick a server?" -> "How X picks a server").
+- Any other label must be a step or term that answer cannot be understood without.
+- No label may start with "Why" unless the request itself asked why.
+- Never ask about rationale, background, alternatives or side points the message added beyond the request. One label is fine; labels about things they never wanted to know are worse than none.
 
 First decide whether the message EXPLAINS anything: the reasoning behind a change, how some mechanism works, what a result or number means, a term or symbol the reader has to know, or a trade-off between options. Reporting state does not count, even when it is about technical things: where something is, what another session did, which files changed, that a process is or is not running, which command to run, what to do next. Examples that get []: "resume the other session with this command; it had started a training run that is no longer running", "the run finished and the commit is pushed", "waiting on your answer". If the message explains nothing, reply with [] and nothing else. Most messages that only report or hand off get [].
 
 Otherwise list 1 to 3 of them. Each label NAMES the part without restating its content, so that reading the label alone gives nothing away:
-- Good: "Why the cache key now includes the user id", "What ρ ≤ 0.80 means for the results", "The trade-off between LoRA and full fine-tuning"
+- Good: "How the cache key is built now", "What ρ ≤ 0.80 means for the results", "The trade-off between LoRA and full fine-tuning"
+- Request "what does the retry wrapper do?": good "What the retry wrapper does", "What exponential backoff means here"; bad "Why backoff beats fixed delays" (rationale nobody asked for)
 - Bad: "The cache key now includes the user id" (restates it: anyone can tick it), "Agent moved to another session" (logistics), "Why the training run stopped" when the message only says that it stopped (nothing explained)
 
 Rules:

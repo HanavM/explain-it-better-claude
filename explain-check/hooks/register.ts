@@ -85,11 +85,11 @@ async function saveUnasked($: EngineInterface, record: Explanation): Promise<voi
   if (record.eligible || record.trigger === 'manual') await save($, { ...record, trigger: null, points: [] })
 }
 
-async function splitPoints($: EngineInterface, answer: string, isManual: boolean): Promise<string[]> {
+async function splitPoints($: EngineInterface, answer: string, request: string, isManual: boolean): Promise<string[]> {
   const r = await $.model.complete({
     model: 'haiku',
     system: SPLIT_SYSTEM,
-    prompt: `<message>\n${answer.slice(0, 12_000)}\n</message>`,
+    prompt: `<request>\n${request.slice(0, 3000) || '(not available)'}\n</request>\n\n<message>\n${answer.slice(0, 12_000)}\n</message>`,
     maxTokens: 300,
     effort: 'low',
     timeoutMs: 15_000,
@@ -161,7 +161,7 @@ async function drain($: EngineInterface): Promise<void> {
   pending = null
   isAsking = true
   try {
-    record.points = await splitPoints($, record.answer, record.trigger === 'manual')
+    record.points = await splitPoints($, record.answer, record.prompt, record.trigger === 'manual')
     // The person may have sent a new prompt or started typing while the
     // split ran; an automatic check would then land on top of that.
     const isStale =

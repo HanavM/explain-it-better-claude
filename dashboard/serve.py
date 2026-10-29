@@ -43,6 +43,7 @@ def popup_list(asked: list) -> list:
             "app": APPS.get(app, app or "unknown"), "cwd": e.get("cwd", ""),
             "prompt": e.get("prompt", ""), "answer": e.get("answer", ""),
             "points": e.get("points", []), "skipped": e.get("skipped", False), "feedback": e.get("feedback"),
+            "excluded": e.get("excluded"),
         })
     return out
 
@@ -50,7 +51,7 @@ def popup_list(asked: list) -> list:
 def popups() -> dict:
     events = [e for e in (load_json(p) for p in sorted(EVENTS.glob("*.json"))) if e]
     asked = [e for e in events if e.get("trigger")]
-    answered = [e for e in asked if e.get("feedback") and e.get("points")]
+    answered = [e for e in asked if e.get("feedback") and e.get("points") and not e.get("excluded")]
     by_day = collections.defaultdict(lambda: [0, 0])
     misses = []
     for e in answered:

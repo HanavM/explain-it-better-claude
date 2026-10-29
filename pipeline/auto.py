@@ -35,7 +35,7 @@ def counts() -> dict:
     answered = 0
     for p in EVENTS.glob("*.json"):
         e = load_json(p)
-        if e and e.get("trigger") and e.get("feedback"):
+        if e and e.get("trigger") and e.get("feedback") and not e.get("excluded"):
             answered += 1
     return {"labelled": labelled, "answered": answered}
 

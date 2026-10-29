@@ -49,7 +49,8 @@ def from_popups() -> list[dict]:
     for path in sorted(EVENTS.glob("*.json")):
         e = load_json(path)
         fb = (e or {}).get("feedback")
-        if not fb or not e.get("points"):
+        # `excluded` marks answers the user said do not reflect what they understood.
+        if not fb or not e.get("points") or e.get("excluded"):
             continue
         got = set() if fb.get("none") else set(fb.get("understood") or [])
         items = [{"item": p, "kind": "result", "score": 1.0 if p in got else -1.0, "cause": None, "evidence": "popup"}
