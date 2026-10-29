@@ -61,8 +61,10 @@ describe('shouldAsk', () => {
     expect(shouldAsk(now, { ...t, skipStreak: 0 }, 1, 0)).toBe(true)
   })
   test('the roll decides within the probability', () => {
-    expect(shouldAsk(now, FRESH, 0, 0.3)).toBe(true)
-    expect(shouldAsk(now, FRESH, 0, 0.5)).toBe(false)
+    expect(shouldAsk(now, FRESH, 0, 0.25)).toBe(true)
+    expect(shouldAsk(now, FRESH, 0, 0.35)).toBe(false)
+    expect(shouldAsk(now, FRESH, 1, 0.45)).toBe(true)
+    expect(shouldAsk(now, FRESH, 1, 0.55)).toBe(false)
   })
   test('reserve counts the ask up front and blocks the next one', () => {
     const t1 = reserve(FRESH, now)

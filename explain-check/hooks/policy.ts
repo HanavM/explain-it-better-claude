@@ -10,14 +10,19 @@ export type Settings = {
   minGapMs: number
   maxPerDay: number
   baseRate: number
+  jargonBoost: number
 }
 
+// The share of coding replies asked about stays about the same however much
+// coding happens in a day (0.3 to 0.5 of them, more for jargon-heavy ones).
+// The gap and the daily ceiling only stop it from asking too much at once.
 export const DEFAULTS: Settings = {
   minChars: 500,
   minCharsWithoutTools: 1500,
-  minGapMs: 20 * 60_000,
-  maxPerDay: 6,
-  baseRate: 0.35,
+  minGapMs: 10 * 60_000,
+  maxPerDay: 20,
+  baseRate: 0.3,
+  jargonBoost: 0.2,
 }
 
 export type Throttle = {
@@ -69,7 +74,7 @@ export function rollDay(t: Throttle, now: number): Throttle {
 // Each skip in a row doubles the gap (capped at 8x) and halves the chance,
 // so dismissing the dialog makes it back off on its own.
 export function askProbability(jargon: number, t: Throttle, s: Settings = DEFAULTS): number {
-  const p = s.baseRate + (1 - s.baseRate) * 0.8 * jargon
+  const p = s.baseRate + s.jargonBoost * jargon
   return p / 2 ** Math.min(t.skipStreak, 3)
 }
 
