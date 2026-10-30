@@ -30,17 +30,48 @@ def tidy(text: str) -> str:
     return "\n".join(keep[:10])
 
 MAX_PROMPT_CHARS = 1500
+# The state has to fit the trainer's sequence limit (with the chosen and
+# rejected prompts) on a 16 GB Mac: about 1,500 tokens.
+EXCERPT_CHARS = 150
+ITEMS_PER_CASE = 3
+ITEM_CHARS = 120
+N_FAILED, N_WORKED = 4, 2
 
 
-def build_state(current: str, examples: list[dict], seed: int, n_failed: int = 8, n_worked: int = 3) -> str:
+def _items(feedback: str) -> str:
+    return "\n".join(line[:ITEM_CHARS] for line in feedback.splitlines()[:ITEMS_PER_CASE])
+
+
+def compact(state: str) -> str:
+    """Shrinks a state to the current size limits: fewer cases, shorter excerpts, fewer items.
+
+    Applies to states written before the limits existed, so their training
+    pairs stay usable; a state build_state wrote now comes back unchanged.
+    """
+    head, *blocks = re.split(r"\n\n(?=Case \d+ \()", state.removesuffix("\n\nWrite the improved instructions."))
+    failed, worked = [], []
+    for b in blocks:
+        m = re.match(r"Case \d+ (\(.*?, mean ([-+]\d+\.\d+)\))\nAgent wrote: (.*?)\nItems:\n(.*)", b, re.S)
+        if not m:
+            continue
+        excerpt = m.group(3).removesuffix("...")[:EXCERPT_CHARS]
+        items = _items(m.group(4))
+        (failed if float(m.group(2)) < 0 else worked).append((m.group(1), excerpt, items))
+    picks = failed[:N_FAILED] + worked[:N_WORKED]
+    cases = [f"Case {i} {tag}\nAgent wrote: {ex}...\nItems:\n{items}" for i, (tag, ex, items) in enumerate(picks, 1)]
+    return head + "\n\n" + "\n\n".join(cases) + "\n\nWrite the improved instructions."
+
+
+def build_state(current: str, examples: list[dict], seed: int, n_failed: int = N_FAILED, n_worked: int = N_WORKED) -> str:
     rng = random.Random(seed)
     failed = [e for e in examples if e["reward"] < 0]
     worked = [e for e in examples if e["reward"] > 0]
     picks = rng.sample(failed, min(n_failed, len(failed))) + rng.sample(worked, min(n_worked, len(worked)))
     cases = []
     for i, e in enumerate(picks, 1):
-        excerpt = e["answer"][:500].replace("\n", " ")
-        cases.append(f"Case {i} ({e['type']}, mean {e['reward']:+.2f})\nAgent wrote: {excerpt}...\nItems:\n{e['feedback']}")
+        excerpt = e["answer"][:EXCERPT_CHARS].replace("\n", " ")
+        items = _items(e["feedback"])
+        cases.append(f"Case {i} ({e['type']}, mean {e['reward']:+.2f})\nAgent wrote: {excerpt}...\nItems:\n{items}")
     return (
         f"Current instructions:\n{current.strip() or '(none yet)'}\n\n"
         + "\n\n".join(cases)

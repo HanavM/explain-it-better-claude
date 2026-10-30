@@ -170,7 +170,8 @@ def train_policy(round_no: int) -> dict | None:
     if len(pairs) < 8:
         return None
     split_dir = DPO / "split"
-    rows = [{"system": p["system"], "prompt": p["prompt"], "chosen": p["chosen"], "rejected": p["rejected"]} for p in pairs]
+    rows = [{"system": p["system"], "prompt": policy.compact(p["prompt"]), "chosen": p["chosen"], "rejected": p["rejected"]}
+            for p in pairs]
     text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
     held = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[-2:])
     for name, body in (("train", text), ("valid", held), ("test", held)):
@@ -183,7 +184,7 @@ def train_policy(round_no: int) -> dict | None:
            "--model", BASE_MODEL, "--train", "--train-mode", "dpo", "--train-type", "lora",
            "--data", str(split_dir), "--adapter-path", str(out),
            "--iters", str(iters), "--batch-size", "1", "--num-layers", "8",
-           "--learning-rate", "5e-6", "--beta", "0.1", "--max-seq-length", "3072",
+           "--learning-rate", "5e-6", "--beta", "0.1", "--max-seq-length", "2048",
            "--val-batches", "1", "--steps-per-report", "10", "--save-every", str(iters),
            "--grad-checkpoint"]
     t0 = time.time()
