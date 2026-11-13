@@ -8,18 +8,18 @@
 :root {
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --border: #e8e7e1;
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #8a5cd1;
   --good: #0ca30c; --warn: #fab219; --bad: #d03b3b;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --border: #2c2c2a; --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --grid: #2c2c2a; --border: #2c2c2a; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9d74e0;
   }
 }
 :root[data-theme="dark"] {
   --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --border: #2c2c2a; --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  --grid: #2c2c2a; --border: #2c2c2a; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9d74e0;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
@@ -102,11 +102,11 @@ ul.pops .res { font-size: 12px; white-space: nowrap; }
 
   <section class="grid2">
     <div class="card">
-      <h2><span>Prompt score by round</span><span class="legend"><span><i style="background:var(--s1)"></i>Live</span><span><i style="background:var(--s2)"></i>Small model</span><span><i style="background:var(--s3)"></i>Claude</span><button class="tbl" data-t="rounds">Table</button></span></h2>
+      <h2><span title="Claude rewrites past messages and predicts how well you would follow them. An estimate, not your real understanding.">Claude&rsquo;s estimate by round</span><span class="legend"><span><i style="background:var(--s1)"></i>Live</span><span><i style="background:var(--s2)"></i>Small model</span><span><i style="background:var(--s3)"></i>Claude</span><span title="The live prompt scored on the same test messages every round, so rounds can be compared"><i style="background:var(--s4)"></i>Fixed test</span><button class="tbl" data-t="rounds">Table</button></span></h2>
       <div class="chart" id="c-rounds"></div>
     </div>
     <div class="card">
-      <h2><span>Understood by day</span><span class="legend"><button class="tbl" data-t="daily">Table</button></span></h2>
+      <h2><span title="Share of key points you understood. Popups: your own clicks. Replies: judged each night from what you said next.">Your understanding by week</span><span class="legend"><span><i style="background:var(--s1)"></i>Replies</span><span><i style="background:var(--s2)"></i>Popups</span><button class="tbl" data-t="daily">Table</button></span></h2>
       <div class="chart" id="c-daily"></div>
     </div>
   </section>
@@ -247,17 +247,22 @@ function render() {
 
   const rb = $('c-rounds');
   if (!rounds.length) empty(rb, 'No rounds yet');
-  else if (tables.rounds) table(rb, ['Round', 'Live', 'Small', 'Claude', 'Live after', 'Pairs'], rounds.map(r => [r.round, r.live, r.small ?? '–', r.claude ?? '–', r.deployed ? `${r.deployed} (${r.source})` : '–', r.pairs]));
+  else if (tables.rounds) table(rb, ['Round', 'Live', 'Small', 'Claude', 'Fixed test', 'Live after', 'Pairs'], rounds.map(r => [r.round, r.live, r.small ?? '–', r.claude ?? '–', r.bench ?? '–', r.deployed ? `${r.deployed} (${r.source})` : '–', r.pairs]));
   else lineChart(rb, rounds.map(r => 'R' + r.round), [
     { name: 'Live', color: css('--s1'), values: rounds.map(r => r.live) },
     { name: 'Small', color: css('--s2'), values: rounds.map(r => r.small) },
     { name: 'Claude', color: css('--s3'), values: rounds.map(r => r.claude) },
+    { name: 'Fixed test', color: css('--s4'), values: rounds.map(r => r.bench ?? null) },
   ], { min: 0, max: 10, fmt: v => (+v).toFixed(1) });
 
   const db = $('c-daily');
-  if (!p.daily.length) empty(db, 'No popup answers yet');
-  else if (tables.daily) table(db, ['Day', 'Understood'], p.daily.map(d => [d.day, pct(d.rate)]));
-  else lineChart(db, p.daily.map(d => d.day.slice(5)), [{ name: 'Understood', color: css('--s1'), values: p.daily.map(d => d.rate) }], { min: 0, max: 1, fmt: pct });
+  const wk = data.weekly || [];
+  if (!wk.length) empty(db, 'No feedback yet');
+  else if (tables.daily) table(db, ['Week', 'Replies', 'Points', 'Popups', 'Points'], wk.map(w => [w.week, pct(w.reply), w.reply_n, pct(w.popup), w.popup_n]));
+  else lineChart(db, wk.map(w => w.week.slice(5)), [
+    { name: 'Replies', color: css('--s1'), values: wk.map(w => w.reply_n >= 10 ? w.reply : null) },
+    { name: 'Popups', color: css('--s2'), values: wk.map(w => w.popup_n >= 10 ? w.popup : null) },
+  ], { min: 0, max: 1, fmt: pct });
 
   const cb = $('c-causes');
   $('causes-n').textContent = l.missed ? `${l.missed} items` : '';

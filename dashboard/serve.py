@@ -102,6 +102,45 @@ def labels() -> dict:
     }
 
 
+def week_of(t: float) -> str:
+    return time.strftime("%G-W%V", time.localtime(t))
+
+
+def weekly() -> list:
+    """Your real understanding, week by week, from two sources: popup answers
+    (your own clicks) and your next reply to each message (judged by the
+    nightly pass). Share of key points understood, among points with evidence."""
+    import datetime
+    w = collections.defaultdict(lambda: {"popup": [0, 0], "reply": [0, 0]})
+    for e in (load_json(p) for p in EVENTS.glob("*.json")):
+        if not e or not e.get("trigger") or not e.get("feedback") or not e.get("points") or e.get("excluded"):
+            continue
+        fb = e["feedback"]
+        c = w[week_of(e["at"] / 1000)]["popup"]
+        c[0] += 0 if fb.get("none") else len(fb.get("understood", []))
+        c[1] += len(e["points"])
+    ts = {p["id"]: p["ts"] for p in load_jsonl(HISTORY / "pairs.jsonl")}
+    for l in load_jsonl(LABELS):
+        if l.get("schema") != 2 or not l.get("reply_targets_this") or l["id"] not in ts:
+            continue
+        ev = [it for it in l["items"] if abs(it["score"]) >= 0.5]
+        if not ev:
+            continue
+        t = datetime.datetime.fromisoformat(ts[l["id"]].replace("Z", "+00:00")).timestamp()
+        c = w[week_of(t)]["reply"]
+        c[0] += sum(it["score"] > 0 for it in ev)
+        c[1] += len(ev)
+    out = []
+    for k in sorted(w):
+        row = {"week": k}
+        for src in ("popup", "reply"):
+            got, n = w[k][src]
+            row[src] = got / n if n else None
+            row[src + "_n"] = n
+        out.append(row)
+    return out
+
+
 def rounds() -> list:
     out = []
     for p in sorted(ROUNDS.glob("r[0-9][0-9][0-9].json")):
@@ -115,6 +154,8 @@ def rounds() -> list:
             "small": max(small) if small else None, "claude": claude[0] if claude else None,
             "deployed": r.get("deployed"), "source": r.get("deployed_source"),
             "pairs": r.get("new_pairs", 0), "trained": bool((r.get("training") or {}).get("ok")),
+            "bench": (r.get("benchmark") or {}).get("score"),
+            "kept": (r.get("training") or {}).get("kept"),
         })
     return out
 
@@ -139,6 +180,7 @@ def payload() -> dict:
         "popups": popups(),
         "labels": labels(),
         "rounds": rounds(),
+        "weekly": weekly(),
         "prompt": prompt(),
         "pairs": len(load_jsonl(DPO / "pairs.jsonl")),
         "adapter": load_json(ADAPTERS / "current.json"),
