@@ -9,12 +9,15 @@
 5. Deploy: the best candidate that passes a lint check goes live on its own
    only if it beats the live prompt by a margin that holds up under
    resampling, on the val split AND on the test split it never saw.
+6. Benchmark: the prompt live after the round is scored on a fixed set of
+   test messages, the same every round, so scores can be compared over time.
 
 Usage: python round.py [--k 4] [--n 12] [--no-train] [--no-deploy]
 """
 
 import argparse
 import json
+import re
 import random
 import string
 import shutil
@@ -25,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 
 import policy
-from common import (ADAPTERS, BASE_MODEL, DPO, PROMPTS, ROOT, ROUNDS, append_jsonl, atomic_write_json,
+from common import (ADAPTERS, BASE_MODEL, DATA, DPO, PROMPTS, ROOT, ROUNDS, append_jsonl, atomic_write_json,
                     atomic_write_text, claude, extract_json, load_json, load_jsonl, set_status)
 from examples import all_examples
 
@@ -54,6 +57,10 @@ Return JSON only: {"scores": [{"id": "A", "items": [1, 0.5, -1], "faithful": tru
 
 PAIR_GAP = 1.0      # min score gap for a DPO pair
 DEPLOY_MARGIN = 0.5  # min val gain over the live prompt
+HOLDOUT_EVERY = 5    # pairs from every 5th round are never trained on; they check training
+BENCH = DATA / "benchmark.json"  # the fixed test messages, chosen once
+BENCH_N = 12
+BENCH_SEED = 777     # fixed judge order, so only the prompt changes between rounds
 
 
 def live_prompt() -> tuple[str, str]:
@@ -62,10 +69,18 @@ def live_prompt() -> tuple[str, str]:
     return v["name"], path.read_text() if path.exists() else ""
 
 
+def fixable(e: dict) -> bool:
+    """A message with at least one miss that better wording could fix. Popup
+    misses have no recorded reason, so they count."""
+    return any(it["score"] <= -0.5 and (it.get("cause") is None or it["cause"] in policy.FIXABLE) for it in e["items"])
+
+
 def sample(examples: list[dict], split: str, n: int, seed: int) -> list[dict]:
+    """Two thirds messages you missed points in (only misses wording could fix),
+    one third messages that worked, so a new rule cannot quietly break those."""
     rng = random.Random(seed)
     pool = [e for e in examples if e["split"] == split]
-    failed = [e for e in pool if e["reward"] < 0]
+    failed = [e for e in pool if e["reward"] < 0 and fixable(e)]
     worked = [e for e in pool if e["reward"] >= 0]
     n_failed = min(len(failed), round(n * 2 / 3))
     return rng.sample(failed, n_failed) + rng.sample(worked, min(len(worked), n - n_failed))
@@ -99,8 +114,11 @@ def judge(example: dict, rewrites: list[str], seed: int) -> list[float]:
         if len(item_scores) != n_items:
             raise ValueError(f"judge gave {len(item_scores)} item scores, expected {n_items}")
         faithful = str(s.get("faithful", True)).lower() != "false"
+        # Points missed because a fact was wrong or left out stay in front of
+        # the judge but are not counted: no rewrite can fix them, so they only add noise.
+        keep = [x for x, it in zip(item_scores, example["items"]) if it.get("cause") != "wrong_or_missing"] or item_scores
         # 0-10: mean item understanding, mapped from [-1, 1].
-        scores[i] = (sum(item_scores) / n_items + 1) * 5 * (1.0 if faithful else 0.3)
+        scores[i] = (sum(keep) / len(keep) + 1) * 5 * (1.0 if faithful else 0.3)
     return scores
 
 
@@ -165,37 +183,87 @@ def lint(text: str) -> dict:
         return {"ok": False, "problems": [f"lint failed: {e}"]}
 
 
+def held_out(pair: dict) -> bool:
+    """All pairs from one round share a feedback state, so whole rounds are held out."""
+    return pair["round"] % HOLDOUT_EVERY == 0
+
+
+def val_line(log_text: str) -> list[dict]:
+    """Every "Val loss ..., Val accuracy ..." line the trainer printed, in order."""
+    out = []
+    for m in re.finditer(r"Iter (\d+): Val loss ([\d.]+).*?Val accuracy ([\d.]+)", log_text):
+        out.append({"iter": int(m[1]), "loss": float(m[2]), "acc": float(m[3])})
+    return out
+
+
 def train_policy(round_no: int) -> dict | None:
+    """Retrains the small model on every pair so far except the held-out rounds,
+    then checks it on those. Before training the model is no better than a coin
+    flip on them (loss 0.693); the new weights are kept only if they beat that."""
     pairs = load_jsonl(DPO / "pairs.jsonl")
-    if len(pairs) < 8:
+    rows = [{"system": p["system"], "prompt": policy.compact(p["prompt"]), "chosen": p["chosen"],
+             "rejected": p["rejected"], "held": held_out(p)} for p in pairs]
+    train = [r for r in rows if not r["held"]]
+    held = [r for r in rows if r["held"]]
+    if len(train) < 8:
         return None
+    dump = lambda rs: "".join(json.dumps({k: v for k, v in r.items() if k != "held"}, ensure_ascii=False) + "\n" for r in rs)
     split_dir = DPO / "split"
-    rows = [{"system": p["system"], "prompt": policy.compact(p["prompt"]), "chosen": p["chosen"], "rejected": p["rejected"]}
-            for p in pairs]
-    text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
-    held = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[-2:])
-    for name, body in (("train", text), ("valid", held), ("test", held)):
-        atomic_write_text(split_dir / f"{name}.jsonl", body)
+    # The trainer needs a valid file; with no held-out pairs yet the check is skipped.
+    atomic_write_text(split_dir / "train.jsonl", dump(train))
+    atomic_write_text(split_dir / "valid.jsonl", dump(held or train[-1:]))
+    atomic_write_text(split_dir / "test.jsonl", dump(held or train[-1:]))
     name = f"a{round_no:03d}"
     out = ADAPTERS / name
-    iters = min(150, 4 * len(rows))
-    set_status("training", f"DPO on {len(rows)} pairs, {iters} steps")
+    iters = min(150, 4 * len(train))
+    set_status("training", f"DPO on {len(train)} pairs, {iters} steps, checked on {len(held)} held out")
     cmd = [str(ROOT / ".venv/bin/python"), "-m", "mlx_lm_lora.train",
            "--model", BASE_MODEL, "--train", "--train-mode", "dpo", "--train-type", "lora",
            "--data", str(split_dir), "--adapter-path", str(out),
            "--iters", str(iters), "--batch-size", "1", "--num-layers", "8",
            "--learning-rate", "5e-6", "--beta", "0.1", "--max-seq-length", "2048",
-           "--val-batches", "1", "--steps-per-report", "10", "--save-every", str(iters),
-           "--grad-checkpoint"]
+           "--val-batches", str(len(held) if held else 1), "--steps-per-eval", str(10 * iters),
+           "--steps-per-report", "10", "--save-every", str(iters), "--grad-checkpoint"]
     t0 = time.time()
     log = ROUNDS / f"r{round_no:03d}-train.log"
     with open(log, "w") as f:
         r = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT)
+    info = {"pairs": len(train), "held_out": len(held), "iters": iters, "secs": round(time.time() - t0), "log": str(log)}
     if r.returncode != 0:
         print(f"training failed, see {log}", file=sys.stderr)
-        return {"ok": False, "log": str(log)}
-    atomic_write_json(ADAPTERS / "current.json", {"name": name, "pairs": len(rows), "at": time.time()})
-    return {"ok": True, "adapter": name, "pairs": len(rows), "iters": iters, "secs": round(time.time() - t0)}
+        return {"ok": False, **info}
+    vals = val_line(log.read_text(errors="replace"))
+    if held and len(vals) >= 2:
+        info["check"] = {"before": vals[0], "after": vals[-1]}
+        kept = vals[-1]["loss"] < vals[0]["loss"]
+    else:
+        info["check"] = None  # nothing held out yet: keep, as before
+        kept = True
+    if kept:
+        atomic_write_json(ADAPTERS / "current.json", {"name": name, "pairs": len(train), "held_out": len(held),
+                                                      "check": info["check"], "at": time.time()})
+    return {"ok": True, "adapter": name, "kept": kept, **info}
+
+
+def benchmark(examples: list[dict], name: str, text: str) -> dict | None:
+    """Scores one prompt on the fixed test messages. The messages are picked
+    once and saved, so new feedback never changes what is being measured."""
+    saved = load_json(BENCH)
+    if not saved:
+        ids = [e["id"] for e in sample(examples, "test", BENCH_N, 0)]
+        atomic_write_json(BENCH, {"ids": ids, "at": time.time()})
+    else:
+        ids = saved["ids"]
+    by_id = {e["id"]: e for e in examples}
+    batch = [by_id[i] for i in ids if i in by_id]  # a message the user later excluded drops out
+    if len(batch) < 4:
+        return None
+    try:
+        (score,), rows = evaluate([text], batch, BENCH_SEED, "benchmark")
+    except RoundAborted as e:
+        print(f"benchmark skipped: {e}", file=sys.stderr)
+        return None
+    return {"prompt": name, "score": round(score, 2), "n": len(rows), "of": len(ids)}
 
 
 def deploy(round_no: int, text: str, info: dict) -> str:
@@ -226,26 +294,28 @@ def main() -> None:
 
     set_status("proposing", f"round {round_no}: small model writing {args.k} prompts")
     state = policy.build_state(live_text, train_ex, seed)
-    candidates = policy.propose(state, k=args.k)
-    if len(candidates) < 2:
+    # Each candidate is the live instructions plus one new rule.
+    rules = policy.propose(state, k=args.k)
+    if len(rules) < 2:
         set_status("idle", "too few usable candidates")
         sys.exit("too few usable candidates")
-    sources = ["small"] * len(candidates)
+    sources = ["small"] * len(rules)
     # Baseline: Claude writes a prompt from the same state. Its result says
     # whether the small model is earning its place, and when it wins it is a
     # good "chosen" example for the small model to learn from.
     set_status("proposing", f"round {round_no}: Claude baseline prompt")
     try:
-        claude_text = policy.tidy(claude(state, policy.SYSTEM, model="sonnet"))
-        if claude_text.count("\n") >= 2:
-            candidates.append(claude_text)
+        claude_rule = policy.one_rule(claude(state, policy.SYSTEM, model="sonnet"))
+        if claude_rule and claude_rule.lower() not in {r.lower() for r in rules}:
+            rules.append(claude_rule)
             sources.append("claude")
     except Exception as e:
         print(f"claude baseline failed: {e}", file=sys.stderr)
 
-    set_status("linting", f"round {round_no}: checking {len(candidates)} prompts")
+    candidates = [policy.add_rule(live_text, r) for r in rules]
+    set_status("linting", f"round {round_no}: checking {len(rules)} new rules")
     with ThreadPoolExecutor(6) as pool:
-        lints = list(pool.map(lint, candidates))
+        lints = list(pool.map(lint, rules))
 
     arms = [live_text] + candidates
     val = sample(examples, "val", args.n, seed)
@@ -260,15 +330,15 @@ def main() -> None:
         if abs(cand_scores[i] - cand_scores[j]) >= PAIR_GAP:
             hi, lo = (i, j) if cand_scores[i] > cand_scores[j] else (j, i)
             append_jsonl(DPO / "pairs.jsonl", {"round": round_no, "system": policy.SYSTEM, "prompt": state,
-                                              "chosen": candidates[hi], "rejected": candidates[lo],
+                                              "chosen": rules[hi], "rejected": rules[lo],
                                               "gap": round(cand_scores[hi] - cand_scores[lo], 2)})
             new_pairs += 1
 
     record.update({
         "examples": {"total": len(examples), "popup": sum(e["source"] == "popup" for e in examples)},
         "live": {"name": live_name, "val": round(live_score, 2)},
-        "candidates": [{"text": c, "val": round(s, 2), "source": src, "lint": l}
-                       for c, s, src, l in zip(candidates, cand_scores, sources, lints)],
+        "candidates": [{"text": c, "rule": r, "val": round(s, 2), "source": src, "lint": l}
+                       for c, r, s, src, l in zip(candidates, rules, cand_scores, sources, lints)],
         "best": best, "new_pairs": new_pairs, "val_ids": [e["id"] for e in val],
     })
 
@@ -288,6 +358,8 @@ def main() -> None:
     record["deployed"] = deployed
     record["deployed_source"] = sources[pick] if deployed else None
 
+    live_name, live_text = live_prompt()  # after any deploy
+    record["benchmark"] = benchmark(examples, live_name, live_text)
     record["training"] = None if args.no_train or new_pairs == 0 else train_policy(round_no)
     record["secs"] = round(time.time() - started)
     atomic_write_json(ROUNDS / f"r{round_no:03d}.json", record)
