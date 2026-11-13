@@ -6,22 +6,23 @@ export const DAY_MS = 86_400_000
 
 export type Settings = {
   minChars: number
-  minCharsWithoutTools: number
   minGapMs: number
   maxPerDay: number
   baseRate: number
+  technicalBoost: number
   jargonBoost: number
 }
 
-// The share of coding replies asked about stays about the same however much
-// coding happens in a day (0.3 to 0.5 of them, more for jargon-heavy ones).
-// The gap and the daily ceiling only stop it from asking too much at once.
+// Any kind of reply can be asked about, with technical ones favoured: a reply
+// after tool use (code changes, commands, lookups) is asked 0.35 to 0.55 of
+// the time, any other reply 0.2 to 0.4 (more for jargon-heavy ones either
+// way). The gap and the daily ceiling only stop it from asking too much at once.
 export const DEFAULTS: Settings = {
   minChars: 500,
-  minCharsWithoutTools: 1500,
   minGapMs: 10 * 60_000,
   maxPerDay: 20,
-  baseRate: 0.3,
+  baseRate: 0.2,
+  technicalBoost: 0.15,
   jargonBoost: 0.2,
 }
 
@@ -38,16 +39,15 @@ export const FRESH: Throttle = { lastAskAt: 0, day: 0, asksToday: 0, skipStreak:
 // Tools that change files: a turn that used one was actual coding.
 export const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 
-// A turn is worth asking about when it is a substantial message after changing
-// files, or a long standalone answer (concept explanations land here). Turns
-// that only looked things up or ran commands (status checks, starting a
-// server) are not coding, so they are never asked about. Short replies that
-// are mostly a question back to the user are not explanations.
-export function isExplanation(answer: string, toolCalls: number, edits: number, s: Settings = DEFAULTS): boolean {
+// Any substantial message is worth asking about, whatever the task was:
+// coding, other technical work, or plain conversation. Technical turns are
+// only favoured by `askProbability`, never required. Whether the message
+// actually explains anything is left to the splitter model, which returns no
+// points for pure status reports. Short replies that are mostly a question
+// back to the user are not explanations.
+export function isExplanation(answer: string, s: Settings = DEFAULTS): boolean {
   const text = answer.trim()
   if (text.length < s.minChars) return false
-  if (toolCalls > 0 && edits === 0) return false
-  if (toolCalls === 0 && text.length < s.minCharsWithoutTools) return false
   if (text.length < 800 && text.endsWith('?')) return false
   return true
 }
@@ -73,17 +73,17 @@ export function rollDay(t: Throttle, now: number): Throttle {
 
 // Each skip in a row doubles the gap (capped at 8x) and halves the chance,
 // so dismissing the dialog makes it back off on its own.
-export function askProbability(jargon: number, t: Throttle, s: Settings = DEFAULTS): number {
-  const p = s.baseRate + s.jargonBoost * jargon
+export function askProbability(jargon: number, technical: boolean, t: Throttle, s: Settings = DEFAULTS): number {
+  const p = s.baseRate + (technical ? s.technicalBoost : 0) + s.jargonBoost * jargon
   return p / 2 ** Math.min(t.skipStreak, 3)
 }
 
-export function shouldAsk(now: number, t: Throttle, jargon: number, roll: number, s: Settings = DEFAULTS): boolean {
+export function shouldAsk(now: number, t: Throttle, jargon: number, technical: boolean, roll: number, s: Settings = DEFAULTS): boolean {
   const cur = rollDay(t, now)
   if (cur.paused) return false
   if (cur.asksToday >= s.maxPerDay) return false
   if (now - cur.lastAskAt < s.minGapMs * 2 ** Math.min(cur.skipStreak, 3)) return false
-  return roll < askProbability(jargon, cur, s)
+  return roll < askProbability(jargon, technical, cur, s)
 }
 
 // Taken when a check is scheduled, not when it closes, so a second session
@@ -105,6 +105,11 @@ export function cleanLabel(raw: string): string {
 
 export const NONE = 'None of it really'
 
+// The dialog takes at most 4 options and refuses more outright (the refusal
+// used to be recorded as a dismissal). NONE takes one of them; closing the
+// dialog with Esc is the way to skip, so no option is spent on that.
+export const MAX_POINTS = 4 - 1
+
 // Reads the splitter model's reply: a JSON array of strings, possibly wrapped
 // in prose or a code fence. An explicit empty array means the message has
 // nothing worth checking, so nothing is asked. An unreadable reply falls back
@@ -124,7 +129,7 @@ export function parsePoints(reply: string | undefined, answer: string, allowFall
   return points
     .map(cleanLabel)
     .filter(p => p.length > 0 && p !== NONE && !seen.has(p) && seen.add(p))
-    .slice(0, 3)
+    .slice(0, MAX_POINTS)
 }
 
 function fallbackPoints(answer: string): string[] {
@@ -159,7 +164,7 @@ export function readAnswer(answer: string, points: string[]): Reading {
   }
 }
 
-export const SPLIT_SYSTEM = `A coding agent sent the reader the message below, in reply to the reader's request. The reader will be shown your labels and tick the ones they understood, so pick only the parts a reader could plausibly fail to understand.
+export const SPLIT_SYSTEM = `An AI assistant sent the reader the message below, in reply to the reader's request. The reader will be shown your labels and tick the ones they understood, so pick only the parts a reader could plausibly fail to understand.
 
 Stay inside what the reader asked for:
 - The FIRST label names the direct answer to their request, phrased from the request itself (request "how does X pick a server?" -> "How X picks a server").

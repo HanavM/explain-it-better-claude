@@ -172,17 +172,20 @@ async function drain($: EngineInterface): Promise<void> {
       return
     }
 
-    await bumpStats($, 'asked')
     let answer: string | undefined
     try {
       answer = await $.ui.ask(
-        'Which parts of the last message could you actually follow? (Space ticks, Enter submits, Esc skips. Type under Other to say what was unclear.)',
+        'Which parts of the last message could you actually follow? (Space ticks, Enter submits, Esc skips.)',
         { options: [...record.points, NONE], header: 'Understood?', multiSelect: true },
       )
-    } catch {
+    } catch (err) {
+      // Esc rejects too, but so does a dialog the engine refuses: log it so a
+      // refusal is not silently filed as a dismissal again.
+      $.ui.log(`explain-check: ask rejected (${String(err)})`, { to: 'debug' })
       answer = undefined
     }
 
+    await bumpStats($, 'asked')
     record.skipped = answer === undefined
     record.feedback = answer === undefined ? null : readAnswer(answer, record.points)
     await bumpStats($, record.skipped ? 'skipped' : 'answered')
@@ -252,7 +255,7 @@ export const register: Register = on => {
     if (!isInteractive || e.agentId !== undefined || e.reason !== 'answer' || e.answer.trim() === '') return next(e)
 
     const now = await $.clock.now()
-    const eligible = isExplanation(e.answer, toolCalls, edits)
+    const eligible = isExplanation(e.answer)
     const jargon = jargonScore(e.answer)
     const record: Explanation = {
       id: `${now}-${crypto.randomUUID().slice(0, 8)}`,
@@ -278,7 +281,7 @@ export const register: Register = on => {
 
     const t = rollDay(await loadThrottle($), now)
     const canAsk = isHumanTurn && !isAsking && pending === null
-    if (canAsk && shouldAsk(now, t, jargon, roll())) {
+    if (canAsk && shouldAsk(now, t, jargon, toolCalls > 0, roll())) {
       await $.store.set(THROTTLE_KEY, reserve(t, now))
       // A short wait, so a prompt the person fires straight back cancels it.
       pending = { record: { ...record, trigger: 'auto' }, notBefore: now + 2500, promptSeq }

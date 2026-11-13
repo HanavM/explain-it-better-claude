@@ -5,3 +5,4 @@ adapters/
 __pycache__/
 explain-check/.claude-plugin/types/
 .DS_Store
+node_modules/

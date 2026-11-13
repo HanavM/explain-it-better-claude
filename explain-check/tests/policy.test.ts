@@ -3,6 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   DAY_MS,
   DEFAULTS,
+  MAX_POINTS,
   FRESH,
   NONE,
   reserve,
@@ -19,21 +20,13 @@ const long = (n: number) => 'word '.repeat(Math.ceil(n / 5)).slice(0, n)
 
 describe('isExplanation', () => {
   test('short replies are not explanations', () => {
-    expect(isExplanation(long(200), 5, 2)).toBe(false)
+    expect(isExplanation(long(200))).toBe(false)
   })
-  test('a substantial message after editing files is', () => {
-    expect(isExplanation(long(700), 3, 1)).toBe(true)
-  })
-  test('a turn that only read or ran commands is not, however long', () => {
-    expect(isExplanation(long(700), 5, 0)).toBe(false)
-    expect(isExplanation(long(3000), 5, 0)).toBe(false)
-  })
-  test('a no-tool answer needs to be long', () => {
-    expect(isExplanation(long(900), 0, 0)).toBe(false)
-    expect(isExplanation(long(1600), 0, 0)).toBe(true)
+  test('any substantial message is, coding or not', () => {
+    expect(isExplanation(long(600))).toBe(true)
   })
   test('a short message ending in a question is a question', () => {
-    expect(isExplanation(long(600) + '?', 2, 1)).toBe(false)
+    expect(isExplanation(long(600) + '?')).toBe(false)
   })
 })
 
@@ -47,29 +40,35 @@ describe('jargonScore', () => {
 describe('shouldAsk', () => {
   const now = 100 * DAY_MS + 5000
   test('respects pause, daily cap and gap', () => {
-    expect(shouldAsk(now, { ...FRESH, paused: true }, 1, 0)).toBe(false)
-    expect(shouldAsk(now, { ...FRESH, day: 100, asksToday: DEFAULTS.maxPerDay }, 1, 0)).toBe(false)
-    expect(shouldAsk(now, { ...FRESH, lastAskAt: now - 60_000 }, 1, 0)).toBe(false)
-    expect(shouldAsk(now, FRESH, 1, 0)).toBe(true)
+    expect(shouldAsk(now, { ...FRESH, paused: true }, 1, true, 0)).toBe(false)
+    expect(shouldAsk(now, { ...FRESH, day: 100, asksToday: DEFAULTS.maxPerDay }, 1, true, 0)).toBe(false)
+    expect(shouldAsk(now, { ...FRESH, lastAskAt: now - 60_000 }, 1, true, 0)).toBe(false)
+    expect(shouldAsk(now, FRESH, 1, true, 0)).toBe(true)
   })
   test('the daily cap resets on a new day', () => {
-    expect(shouldAsk(now, { ...FRESH, day: 99, asksToday: DEFAULTS.maxPerDay }, 1, 0)).toBe(true)
+    expect(shouldAsk(now, { ...FRESH, day: 99, asksToday: DEFAULTS.maxPerDay }, 1, true, 0)).toBe(true)
   })
   test('skips widen the gap', () => {
     const t = { ...FRESH, day: 100, lastAskAt: now - 25 * 60_000, skipStreak: 2 }
-    expect(shouldAsk(now, t, 1, 0)).toBe(false)
-    expect(shouldAsk(now, { ...t, skipStreak: 0 }, 1, 0)).toBe(true)
+    expect(shouldAsk(now, t, 1, true, 0)).toBe(false)
+    expect(shouldAsk(now, { ...t, skipStreak: 0 }, 1, true, 0)).toBe(true)
   })
   test('the roll decides within the probability', () => {
-    expect(shouldAsk(now, FRESH, 0, 0.25)).toBe(true)
-    expect(shouldAsk(now, FRESH, 0, 0.35)).toBe(false)
-    expect(shouldAsk(now, FRESH, 1, 0.45)).toBe(true)
-    expect(shouldAsk(now, FRESH, 1, 0.55)).toBe(false)
+    expect(shouldAsk(now, FRESH, 0, true, 0.3)).toBe(true)
+    expect(shouldAsk(now, FRESH, 0, true, 0.4)).toBe(false)
+    expect(shouldAsk(now, FRESH, 1, true, 0.5)).toBe(true)
+    expect(shouldAsk(now, FRESH, 1, true, 0.6)).toBe(false)
+  })
+  test('non-technical replies can be asked about, just less often', () => {
+    expect(shouldAsk(now, FRESH, 0, false, 0.15)).toBe(true)
+    expect(shouldAsk(now, FRESH, 0, false, 0.25)).toBe(false)
+    expect(shouldAsk(now, FRESH, 1, false, 0.35)).toBe(true)
+    expect(shouldAsk(now, FRESH, 1, false, 0.45)).toBe(false)
   })
   test('reserve counts the ask up front and blocks the next one', () => {
     const t1 = reserve(FRESH, now)
     expect(t1.asksToday).toBe(1)
-    expect(shouldAsk(now + 1000, t1, 1, 0)).toBe(false)
+    expect(shouldAsk(now + 1000, t1, 1, true, 0)).toBe(false)
   })
   test('settle tracks skips, and a new day clears them', () => {
     const t1 = settle(settle(reserve(FRESH, now), true), true)
@@ -84,8 +83,9 @@ describe('parsePoints', () => {
     const pts = parsePoints('```json\n["Fixed the merge bug, finally", "ρ ≤ 0.80 test drops 12 tasks"]\n```', 'x')
     expect(pts).toEqual(['Fixed the merge bug - finally', 'ρ ≤ 0.80 test drops 12 tasks'])
   })
-  test('keeps at most three', () => {
-    expect(parsePoints('["a1","b2","c3","d4"]', 'x').length).toBe(3)
+  test('keeps few enough that the dialog (max 4 options) accepts them', () => {
+    expect(parsePoints('["a1","b2","c3","d4"]', 'x').length).toBe(MAX_POINTS)
+    expect(MAX_POINTS + 1).toBe(4)
   })
   test('falls back to the message lines', () => {
     const pts = parsePoints(undefined, '## Summary\n- **Moved the cache** into the worker process\n| a | b |\n')
