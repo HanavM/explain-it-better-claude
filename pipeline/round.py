@@ -196,16 +196,18 @@ def val_line(log_text: str) -> list[dict]:
     return out
 
 
-def train_policy(round_no: int) -> dict | None:
+def train_policy(round_no: int, source: str | None = None, min_pairs: int = 8) -> dict | None:
     """Retrains the small model on every pair so far except the held-out rounds,
     then checks it on those. Before training the model is no better than a coin
     flip on them (loss 0.693); the new weights are kept only if they beat that."""
     pairs = load_jsonl(DPO / "pairs.jsonl")
+    if source:  # e.g. "ab": only pairs decided by real use
+        pairs = [p for p in pairs if p.get("source") == source]
     rows = [{"system": p["system"], "prompt": policy.compact(p["prompt"]), "chosen": p["chosen"],
              "rejected": p["rejected"], "held": held_out(p)} for p in pairs]
     train = [r for r in rows if not r["held"]]
     held = [r for r in rows if r["held"]]
-    if len(train) < 8:
+    if len(train) < min_pairs:
         return None
     dump = lambda rs: "".join(json.dumps({k: v for k, v in r.items() if k != "held"}, ensure_ascii=False) + "\n" for r in rs)
     split_dir = DPO / "split"
@@ -297,28 +299,26 @@ def main() -> None:
 
     set_status("proposing", f"round {round_no}: small model writing {args.k} prompts")
     state = policy.build_state(live_text, train_ex, seed)
-    # Each candidate is the live instructions plus one new rule.
-    rules = policy.propose(state, k=args.k)
-    if len(rules) < 2:
+    candidates = policy.propose(state, k=args.k)
+    if len(candidates) < 2:
         set_status("idle", "too few usable candidates")
         sys.exit("too few usable candidates")
-    sources = ["small"] * len(rules)
+    sources = ["small"] * len(candidates)
     # Baseline: Claude writes a prompt from the same state. Its result says
     # whether the small model is earning its place, and when it wins it is a
     # good "chosen" example for the small model to learn from.
     set_status("proposing", f"round {round_no}: Claude baseline prompt")
     try:
-        claude_rule = policy.one_rule(claude(state, policy.SYSTEM, model="sonnet"))
-        if claude_rule and claude_rule.lower() not in {r.lower() for r in rules}:
-            rules.append(claude_rule)
+        claude_text = policy.tidy(claude(state, policy.SYSTEM, model="sonnet"))
+        if claude_text.count("\n") >= 2:
+            candidates.append(claude_text)
             sources.append("claude")
     except Exception as e:
         print(f"claude baseline failed: {e}", file=sys.stderr)
 
-    candidates = [policy.add_rule(live_text, r) for r in rules]
-    set_status("linting", f"round {round_no}: checking {len(rules)} new rules")
+    set_status("linting", f"round {round_no}: checking {len(candidates)} prompts")
     with ThreadPoolExecutor(6) as pool:
-        lints = list(pool.map(lint, rules))
+        lints = list(pool.map(lint, candidates))
 
     arms = [live_text] + candidates
     val = sample(examples, "val", args.n, seed)
@@ -333,15 +333,15 @@ def main() -> None:
         if abs(cand_scores[i] - cand_scores[j]) >= PAIR_GAP:
             hi, lo = (i, j) if cand_scores[i] > cand_scores[j] else (j, i)
             append_jsonl(DPO / "pairs.jsonl", {"round": round_no, "system": policy.SYSTEM, "prompt": state,
-                                              "chosen": rules[hi], "rejected": rules[lo],
+                                              "chosen": candidates[hi], "rejected": candidates[lo],
                                               "gap": round(cand_scores[hi] - cand_scores[lo], 2)})
             new_pairs += 1
 
     record.update({
         "examples": {"total": len(examples), "popup": sum(e["source"] == "popup" for e in examples)},
         "live": {"name": live_name, "val": round(live_score, 2)},
-        "candidates": [{"text": c, "rule": r, "val": round(s, 2), "source": src, "lint": l}
-                       for c, r, s, src, l in zip(candidates, rules, cand_scores, sources, lints)],
+        "candidates": [{"text": c, "val": round(s, 2), "source": src, "lint": l}
+                       for c, s, src, l in zip(candidates, cand_scores, sources, lints)],
         "best": best, "new_pairs": new_pairs, "val_ids": [e["id"] for e in val],
     })
 

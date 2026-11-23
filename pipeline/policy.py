@@ -6,9 +6,9 @@ import re
 
 from common import ADAPTERS, BASE_MODEL, load_json
 
-# Older training pairs were whole rewritten instruction sets; they keep this
-# system prompt, so the model can tell the two tasks apart.
-SYSTEM_FULL = """You write the explanation instructions that a coding agent follows when it reports its work to one specific person. You are shown the current instructions and real messages the agent wrote. Each message's key items are scored for how well the person understood them: +1 understood, 0 never referenced, -1 not understood.
+# The task: write a whole new set of instructions. (Pairs from the few rounds
+# that asked for one added rule carry SYSTEM_RULE, so the tasks stay apart.)
+SYSTEM = """You write the explanation instructions that a coding agent follows when it reports its work to one specific person. You are shown the current instructions and real messages the agent wrote. Each message's key items are scored for how well the person understood them: +1 understood, 0 never referenced, -1 not understood.
 
 Write improved instructions that would have made the -1 items understandable without hurting the +1 items.
 - Address the agent directly ("Start with...", "Define...").
@@ -17,7 +17,7 @@ Write improved instructions that would have made the -1 items understandable wit
 - Each bullet says something new. At most 10 bullets and 160 words.
 - Output only the bullet list, nothing else."""
 
-SYSTEM = """You add one rule to the explanation instructions that a coding agent follows when it reports its work to one specific person. You are shown the current instructions, the most common reasons the person missed points, and real messages the agent wrote. Each message's key items are scored for how well the person understood them: +1 understood, 0 never referenced, -1 not understood.
+SYSTEM_RULE = """You add one rule to the explanation instructions that a coding agent follows when it reports its work to one specific person. You are shown the current instructions, the most common reasons the person missed points, and real messages the agent wrote. Each message's key items are scored for how well the person understood them: +1 understood, 0 never referenced, -1 not understood.
 
 Write ONE new rule that would have made the -1 items understandable, aimed at the most common reason. The current instructions stay as they are; your rule is added at the end.
 - Address the agent directly ("Start with...", "Define...").
@@ -49,7 +49,7 @@ def tidy(text: str) -> str:
             keep.append("- " + body)
     return "\n".join(keep[:10])
 
-MAX_PROMPT_CHARS = 1500
+MAX_PROMPT_CHARS = 1900  # the live version is ~1,350; room to add without bloating
 # The state has to fit the trainer's sequence limit (with the chosen and
 # rejected prompts) on a 16 GB Mac: about 1,500 tokens.
 EXCERPT_CHARS = 150
@@ -100,7 +100,7 @@ def build_state(current: str, examples: list[dict], seed: int, n_failed: int = N
         f"Current instructions:\n{current.strip() or '(none yet)'}\n\n"
         f"Most common reasons points were missed: {top}\n\n"
         + "\n\n".join(cases)
-        + ASK_RULE
+        + ASK_FULL
     )
 
 
@@ -139,8 +139,9 @@ def propose(state: str, k: int = 4, temperature: float = 0.9) -> list[str]:
     for _ in range(k * 3):
         if len(out) == k:
             break
-        rule = one_rule(generate(model, tok, prompt=prompt, max_tokens=120, sampler=sampler, logits_processors=processors))
-        if rule and rule.lower() not in seen:
-            seen.add(rule.lower())
-            out.append(rule)
+        text = generate(model, tok, prompt=prompt, max_tokens=500, sampler=sampler, logits_processors=processors)
+        text = tidy(text.split("</think>", 1)[-1])
+        if text.count("\n") >= 2 and len(text) <= MAX_PROMPT_CHARS and text not in seen:
+            seen.add(text)
+            out.append(text)
     return out
