@@ -281,6 +281,9 @@ def main() -> None:
     ap.add_argument("--no-train", action="store_true")
     ap.add_argument("--no-deploy", action="store_true")
     args = ap.parse_args()
+    # A running A/B test owns the live version; a round must not swap it.
+    if (load_json(DATA / "ab.json") or {}).get("status") == "running":
+        args.no_deploy = True
 
     ROUNDS.mkdir(parents=True, exist_ok=True)
     round_no = 1 + max([int(p.stem[1:4]) for p in ROUNDS.glob("r[0-9][0-9][0-9].json")] or [0])

@@ -40,6 +40,9 @@ type Explanation = {
   points: string[]
   skipped: boolean
   feedback: Reading | null
+  // The explanation instructions version the session was composed with, so
+  // an A/B test can credit this message to the right version.
+  promptVersion?: string
 }
 
 type Pending = { record: Explanation; notBefore: number; promptSeq: number }
@@ -98,15 +101,15 @@ async function splitPoints($: EngineInterface, answer: string, request: string, 
   return parsePoints(r.isAnswered ? r.text : undefined, answer, isManual)
 }
 
-// The live explanation prompt the training loop deployed, as plain text.
-async function livePrompt($: EngineInterface): Promise<string> {
+// The live explanation prompt the training loop deployed: its version name and text.
+async function livePrompt($: EngineInterface): Promise<{ name: string; text: string }> {
   const home = (await $.env.get('HOME')) ?? '.'
   try {
     const cur = JSON.parse(await $.fs.read(`${home}/explainer-rl/prompts/current.json`)) as { name?: string }
-    if (!cur.name || !/^v\d{3}$/.test(cur.name)) return ''
-    return (await $.fs.read(`${home}/explainer-rl/prompts/${cur.name}.md`)).trim()
+    if (!cur.name || !/^v\d{3}$/.test(cur.name)) return { name: '', text: '' }
+    return { name: cur.name, text: (await $.fs.read(`${home}/explainer-rl/prompts/${cur.name}.md`)).trim() }
   } catch {
-    return ''
+    return { name: '', text: '' }
   }
 }
 
@@ -123,6 +126,7 @@ let last: Explanation | null = null
 let pending: Pending | null = null
 let isAsking = false
 let promptSeq = 0
+let composedVersion = ''
 
 // The prompt box's text, or '' on a host that has no box to read.
 async function typedText($: EngineInterface): Promise<string> {
@@ -235,7 +239,8 @@ export const register: Register = on => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     if (!isInteractive) return composed
-    const text = await livePrompt($)
+    const { name, text } = await livePrompt($)
+    composedVersion = name
     if (text === '') return composed
     return {
       sections: [
@@ -275,6 +280,7 @@ export const register: Register = on => {
       points: [],
       skipped: false,
       feedback: null,
+      promptVersion: composedVersion || undefined,
     }
     last = record
     if (!eligible) return next(e)

@@ -141,6 +141,16 @@ def weekly() -> list:
     return out
 
 
+def ab_status() -> dict | None:
+    """The A/B test in progress, or the last finished one."""
+    import ab
+    state = load_json(ab.STATE)
+    if not state:
+        return None
+    s = ab.summary(state) if state.get("status") == "running" else state.get("result")
+    return {k: state.get(k) for k in ("id", "status", "a", "b", "live", "rule", "source", "winner", "why", "started")} | {"now": s}
+
+
 def rounds() -> list:
     out = []
     for p in sorted(ROUNDS.glob("r[0-9][0-9][0-9].json")):
@@ -181,6 +191,7 @@ def payload() -> dict:
         "labels": labels(),
         "rounds": rounds(),
         "weekly": weekly(),
+        "ab": ab_status(),
         "prompt": prompt(),
         "pairs": len(load_jsonl(DPO / "pairs.jsonl")),
         "adapter": load_json(ADAPTERS / "current.json"),

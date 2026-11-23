@@ -12,6 +12,11 @@ A round starts once enough new feedback has built up since the last one,
 whatever time it is. A popup answer is the user's own word, so it counts for
 more than a label inferred from a reply.
 
+Two modes, set in data/mode.txt (default "ab"):
+- ab: no rounds. Each night, after labelling, the A/B test takes one step
+  (see ab.py): versions take turns being live and are judged on real feedback.
+- rounds: the older loop, where Claude predicts which version is better.
+
 Usage: python auto.py [--nightly] [--dry-run]
 """
 
@@ -25,6 +30,7 @@ import label
 from common import DATA, EVENTS, LABELS, ROOT, atomic_write_json, load_json, load_jsonl, set_status
 
 LOCK = DATA / "auto.lock"
+MODE = DATA / "mode.txt"
 STATE = DATA / "auto.json"       # feedback counts as of the last round, and of the last failure
 MIN_NEW = 15                     # new feedback needed for a round
 POPUP_WEIGHT = 3                 # one popup answer counts as this many labels
@@ -42,6 +48,14 @@ def counts() -> dict:
 
 def new_feedback(now: dict, state: dict) -> int:
     return (now["labelled"] - state.get("labelled", 0)) + POPUP_WEIGHT * (now["answered"] - state.get("answered", 0))
+
+
+def mode() -> str:
+    try:
+        m = MODE.read_text().strip()
+    except FileNotFoundError:
+        return "ab"
+    return m if m in ("ab", "rounds") else "ab"
 
 
 def round_running() -> bool:
@@ -63,6 +77,12 @@ def main(nightly: bool = False, dry_run: bool = False) -> None:
         if nightly and not dry_run:
             ingest.main()
             label.main(batch=time.strftime("nightly-%Y-%m-%d"))
+
+        if mode() == "ab":
+            if nightly and not dry_run:
+                import ab
+                ab.step()
+            return
 
         state = load_json(STATE, {})
         now = counts()
