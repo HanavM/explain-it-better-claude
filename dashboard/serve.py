@@ -111,8 +111,13 @@ def weekly() -> list:
     (your own clicks) and your next reply to each message (judged by the
     nightly pass). Share of key points understood, among points with evidence."""
     import datetime
-    w = collections.defaultdict(lambda: {"popup": [0, 0], "reply": [0, 0]})
+    w = collections.defaultdict(lambda: {"popup": [0, 0], "reply": [0, 0], "rating": [0, 0]})
     for e in (load_json(p) for p in EVENTS.glob("*.json")):
+        if e and e.get("kind") == "rating" and e.get("rating"):
+            c = w[week_of(e["at"] / 1000)]["rating"]
+            c[0] += e["rating"]
+            c[1] += 1
+            continue
         if not e or not e.get("trigger") or not e.get("feedback") or not e.get("points") or e.get("excluded"):
             continue
         fb = e["feedback"]
@@ -137,6 +142,9 @@ def weekly() -> list:
             got, n = w[k][src]
             row[src] = got / n if n else None
             row[src + "_n"] = n
+        total, n = w[k]["rating"]
+        row["rating"] = total / n if n else None  # mean of 1-5
+        row["rating_n"] = n
         out.append(row)
     return out
 
@@ -148,7 +156,7 @@ def ab_status() -> dict | None:
     if not state:
         return None
     s = ab.summary(state) if state.get("status") == "running" else state.get("result")
-    return {k: state.get(k) for k in ("id", "status", "a", "b", "live", "rule", "source", "winner", "why", "started")} | {"now": s}
+    return {k: state.get(k) for k in ("id", "status", "baseline", "live", "winner", "why", "started", "learned")} | {"now": s}
 
 
 def rounds() -> list:

@@ -43,11 +43,21 @@ type Explanation = {
   // The explanation instructions version the session was composed with, so
   // an A/B test can credit this message to the right version.
   promptVersion?: string
+  // Which check was shown: the understanding check (which points landed) or
+  // the quick 1-5 rating. Absent on records from before ratings existed.
+  kind?: 'understood' | 'rating'
+  // The 1-5 answer to "How much did you like the explanation?"; null if skipped.
+  rating?: number | null
 }
 
 type Pending = { record: Explanation; notBefore: number; promptSeq: number }
 
 const THROTTLE_KEY = 'throttle'
+// Share of automatic checks that are the quick rating instead of the understanding check.
+const RATING_SHARE = 0.5
+// An open rating row goes away unanswered after this long.
+const RATING_TIMEOUT_MS = 5 * 60_000
+const RATINGS = ['Not at all', 'A little', 'Somewhat', 'A lot', 'Loved it'] as const
 const STATS_KEY = 'stats'
 // How long an automatic check waits for the prompt box to be empty.
 const GIVE_UP_MS = 120_000
@@ -127,6 +137,8 @@ let pending: Pending | null = null
 let isAsking = false
 let promptSeq = 0
 let composedVersion = ''
+// The rating row above the prompt, while one is open.
+let rating: { record: Explanation; openedAt: number; promptSeq: number } | null = null
 
 // The prompt box's text, or '' on a host that has no box to read.
 async function typedText($: EngineInterface): Promise<string> {
@@ -144,6 +156,7 @@ async function replacePending($: EngineInterface, next: Pending | null): Promise
 }
 
 async function drain($: EngineInterface): Promise<void> {
+  if (rating !== null && (await $.clock.now()) - rating.openedAt > RATING_TIMEOUT_MS) await closeRating($, null)
   if (isAsking || pending === null) return
   const now = await $.clock.now()
   if (now < pending.notBefore) return
@@ -164,6 +177,13 @@ async function drain($: EngineInterface): Promise<void> {
 
   pending = null
   isAsking = true
+  if (record.trigger === 'auto' && roll() < RATING_SHARE) {
+    record.kind = 'rating'
+    rating = { record, openedAt: now, promptSeq: current.promptSeq }
+    $.ui.invalidate('ui.render')
+    return // isAsking stays true until the row closes
+  }
+  record.kind = 'understood'
   try {
     record.points = await splitPoints($, record.answer, record.prompt, record.trigger === 'manual')
     // The person may have sent a new prompt or started typing while the
@@ -204,6 +224,20 @@ async function drain($: EngineInterface): Promise<void> {
   }
 }
 
+// Closes the rating row: a press saves the score, anything else a skip.
+async function closeRating($: EngineInterface, score: number | null): Promise<void> {
+  const open = rating
+  if (open === null) return
+  rating = null
+  isAsking = false
+  $.ui.invalidate('ui.render')
+  const record = { ...open.record, rating: score, skipped: score === null }
+  await bumpStats($, 'asked')
+  await bumpStats($, record.skipped ? 'skipped' : 'answered')
+  if (record.trigger === 'auto') await $.store.set(THROTTLE_KEY, settle(await loadThrottle($), record.skipped))
+  await save($, record)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     app = (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) ?? ''
@@ -213,7 +247,7 @@ export const register: Register = on => {
     isInteractive = !isOff && (e.isInteractive || PERSON_APPS.has(app))
     await $.command.register({
       name: 'explain-check',
-      description: 'Rate the last explanation now; or `off`, `on`, `stats`',
+      description: 'Check the last explanation now; `rate` for the quick 1-5 rating; or `off`, `on`, `stats`',
     })
     // Headless runs (-p, the pipeline) have no one to ask; they would only burn
     // the daily budget. VS Code and the desktop app count as interactive.
@@ -222,6 +256,8 @@ export const register: Register = on => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    // Sending the next prompt instead of rating counts as a skip.
+    if (rating !== null) await closeRating($, null)
     toolCalls = 0
     edits = 0
     promptSeq += 1
@@ -248,6 +284,25 @@ export const register: Register = on => {
         { id: 'explain-check:explaining', text: `# Explaining your work to this user\n\n${text}`, scope: 'session' as const },
       ],
     }
+  })
+
+  // The quick rating: a row above the prompt, answered by a bare 1-5 in an
+  // empty prompt box (or a click), the way Claude Code's own survey is.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const open = rating
+    if (open === null || e.props.hasSurvey) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="column">
+        <Text>How much did you like that explanation? <Text dimColor>(press 1-5 · 0 skips)</Text></Text>
+        <Box gap={2} flexWrap="wrap">
+          {RATINGS.map((label, i) => (
+            <Button key={`rate-${i + 1}`} hotkey={String(i + 1)} plain label={label} onPress={() => closeRating($, i + 1)} />
+          ))}
+          <Button key="rate-skip" hotkey="0" plain dimColor label="Skip" onPress={() => closeRating($, null)} />
+        </Box>
+      </Box>
+    )
   })
 
   on('tool.call', ($, e, next) => {
@@ -317,6 +372,13 @@ export const register: Register = on => {
     if (last === null) return { text: 'No agent message in this session yet.' }
     if (isAsking) return { text: 'A check is already open.' }
     const now = await $.clock.now()
+    if (arg === 'rate') {
+      const record: Explanation = { ...last, id: `${last.id}-m${now}`, parentId: last.id, trigger: 'manual', kind: 'rating' }
+      isAsking = true
+      rating = { record, openedAt: now, promptSeq }
+      $.ui.invalidate('ui.render')
+      return { text: 'Rate the last message: press 1-5 with the prompt box empty (0 skips).' }
+    }
     const record: Explanation = { ...last, id: `${last.id}-m${now}`, parentId: last.id, trigger: 'manual' }
     await replacePending($, { record, notBefore: 0, promptSeq })
     return { text: 'Opening the check for the last message.' }

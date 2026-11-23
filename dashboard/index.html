@@ -111,7 +111,7 @@ ul.pops .res { font-size: 12px; white-space: nowrap; }
       <div class="chart" id="c-rounds"></div>
     </div>
     <div class="card">
-      <h2><span title="Share of key points you understood. Popups: your own clicks. Replies: judged each night from what you said next.">Your understanding by week</span><span class="legend"><span><i style="background:var(--s1)"></i>Replies</span><span><i style="background:var(--s2)"></i>Popups</span><button class="tbl" data-t="daily">Table</button></span></h2>
+      <h2><span title="Share of key points you understood. Popups: your own clicks. Replies: judged each night from what you said next.">Your understanding by week</span><span class="legend"><span><i style="background:var(--s1)"></i>Replies</span><span><i style="background:var(--s2)"></i>Popups</span><span title="Average 1-5 rating, drawn as (rating-1)/4: 1 = 0%, 5 = 100%"><i style="background:var(--s4)"></i>Ratings</span><button class="tbl" data-t="daily">Table</button></span></h2>
       <div class="chart" id="c-daily"></div>
     </div>
   </section>
@@ -237,16 +237,14 @@ function render() {
   if (!data) return;
   const { status, popups: p, labels: l, rounds, prompt, pairs, adapter } = data;
   const ab = data.ab;
-  if (!ab) $('ab').innerHTML = '<p class="muted">No test yet. The first one starts at the next nightly run.</p>';
+  if (!ab || !ab.now || !ab.now.arms) $('ab').innerHTML = '<p class="muted">No test yet. The first one starts at the next nightly run.</p>';
   else {
-    const n = ab.now || {}, A = n.a || {}, B = n.b || {};
-    const row = (tag, v, live) => `<tr><td><b>${tag}</b> ${esc(v.name || '')}${live ? ' <span class="chip">live now</span>' : ''}</td><td>${v.messages ?? 0} messages</td><td>${pct(v.understood)} understood</td></tr>`;
-    $('ab-meta').textContent = ab.status === 'running' ? `test ${ab.id} · started ${ago(ab.started)} ago` : `test ${ab.id} done · ${ab.winner} kept`;
-    $('ab').innerHTML = `<table>${row('A', A, ab.live === ab.a && ab.status === 'running')}${row('B', B, ab.live === ab.b && ab.status === 'running')}</table>`
-      + `<p><b>B adds:</b> ${esc((ab.rule || '').replace(/^- /, ''))} <span class="muted">(${esc(ab.source)})</span></p>`
-      + (ab.status === 'running'
-        ? `<p class="muted">B ahead in ${pct(n.b_better)} of resamples. A winner is called at 90% (or 10%) once each has 20 messages.</p>`
-        : `<p class="muted">${esc(ab.why || '')}</p>`);
+    const running = ab.status === 'running';
+    $('ab-meta').textContent = running ? `test ${ab.id} · started ${ago(ab.started)} ago` : `test ${ab.id} done · ${ab.winner} live`;
+    const rows = ab.now.arms.map(v => `<tr><td><b>${esc(v.name)}</b> ${v.role === 'baseline' ? '<span class="muted">(current)</span>' : ''}${running && v.name === ab.live ? ' <span class="chip">live today</span>' : ''}${!running && v.name === ab.winner ? ' <span class="chip">winner</span>' : ''}</td><td>${v.messages} messages</td><td>${pct(v.understood)} understood</td><td>${pct(v.p_best)} chance best</td></tr>`).join('');
+    $('ab').innerHTML = `<table>${rows}</table>` + (running
+      ? '<p class="muted">Each night one version is live for the day; better-looking ones get more days. A winner is called at 90% chance best with 15+ messages, then the small model trains on the result.</p>'
+      : `<p class="muted">${esc(ab.why || '')}${ab.learned ? ` · learned from ${ab.learned.pairs} real comparisons` : ''}</p>`);
   }
   const busy = status.phase && status.phase !== 'idle';
   $('dot').className = 'dot' + (busy ? ' on' : '');
@@ -275,10 +273,11 @@ function render() {
   const db = $('c-daily');
   const wk = data.weekly || [];
   if (!wk.length) empty(db, 'No feedback yet');
-  else if (tables.daily) table(db, ['Week', 'Replies', 'Points', 'Popups', 'Points'], wk.map(w => [w.week, pct(w.reply), w.reply_n, pct(w.popup), w.popup_n]));
+  else if (tables.daily) table(db, ['Week', 'Replies', 'Points', 'Popups', 'Points', 'Avg rating', 'Ratings'], wk.map(w => [w.week, pct(w.reply), w.reply_n, pct(w.popup), w.popup_n, w.rating == null ? '–' : w.rating.toFixed(1) + ' / 5', w.rating_n]));
   else lineChart(db, wk.map(w => w.week.slice(5)), [
     { name: 'Replies', color: css('--s1'), values: wk.map(w => w.reply_n >= 10 ? w.reply : null) },
     { name: 'Popups', color: css('--s2'), values: wk.map(w => w.popup_n >= 10 ? w.popup : null) },
+    { name: 'Ratings', color: css('--s4'), values: wk.map(w => w.rating_n >= 5 ? (w.rating - 1) / 4 : null) },
   ], { min: 0, max: 1, fmt: pct });
 
   const cb = $('c-causes');
