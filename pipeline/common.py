@@ -100,6 +100,8 @@ def claude(prompt: str, system: str, model: str = "sonnet", timeout: int = 300, 
         "--model", model,
         "--tools", "",
         "--no-session-persistence",
+        # No CLAUDE.md, memory, plugins or hooks: the call sees only what it is sent.
+        "--safe-mode",
         "--system-prompt", system,
     ]
     last_err = ""
